@@ -31,7 +31,6 @@ except Exception as e:
     st.stop()
 
 def init_db():
-    """Veritabanı tablosunu oluşturur."""
     try:
         with conn.session as s:
             s.execute(text("""
@@ -45,7 +44,6 @@ def init_db():
         st.warning(f"Veritabanı tablosu oluşturulamadı: {e}")
 
 def ilerleme_kaydet(wbs, yuzde):
-    """İlerlemeyi veritabanına kaydeder veya günceller."""
     try:
         with conn.session as s:
             s.execute(text("""
@@ -58,14 +56,12 @@ def ilerleme_kaydet(wbs, yuzde):
         st.error(f"Kayıt hatası: {e}")
 
 def ilerleme_yukle():
-    """Veritabanından tüm ilerlemeleri okur."""
     try:
         df = conn.query("SELECT wbs_kodu, ilerleme_yuzdesi FROM ilerleme", ttl=0)
         return dict(zip(df['wbs_kodu'], df['ilerleme_yuzdesi']))
     except Exception:
         return {}
 
-# Başlangıçta tabloyu oluştur
 init_db()
 
 # ============================================================
@@ -259,8 +255,92 @@ modul = st.selectbox("Modül Seç", [
     "4. Bütçe & Maliyet (EVM)", "5. Monte Carlo Simülasyonu", "6. Nakit Akışı (S-Eğrisi)"
 ])
 
-if modul == "1. İş Programı Verisi": 
-    st.subheader("📋 İş Programı ve Bütçe"); st.dataframe(df_veri, use_container_width=True)
+if modul == "1. İş Programı Verisi":
+    st.subheader("📊 Proje Yönetim Paneli (Dashboard)")
+    
+    # 1. Veritabanından güncel ilerlemeleri çek
+    guncel_ilerleme = ilerleme_yukle()
+    
+    # 2. EVM Hesaplamalarını Hazırla (Grafikler için)
+    toplam_pv, toplam_ev, toplam_ac = 0, 0, 0
+    en_pahali_kalemler = []
+    
+    for _, row in df_cpm.iterrows():
+        butce = row["Bütçe (TL)"]
+        if butce > 0:
+            ilerleme = guncel_ilerleme.get(row["WBS Kodu"], 0) / 100.0
+            toplam_pv += butce
+            ev = butce * ilerleme
+            toplam_ev += ev
+            toplam_ac += ev * 1.10 # Varsayım: %10 fazla harcama
+            en_pahali_kalemler.append({"İş Kalemi": row["İş Kalemi"], "Bütçe": butce, "İlerleme": ilerleme * 100})
+
+    # 3. Üst Kısım: Özet Kartları (KPI)
+    c1, c2, c3, c4 = st.columns(4)
+    
+    # Genel Fiziksel İlerleme (%)
+    genel_ilerleme = (toplam_ev / toplam_pv * 100) if toplam_pv > 0 else 0
+    c1.metric("Genel Fiziksel İlerleme", f"%{genel_ilerleme:.1f}")
+    
+    # Finansal Durum
+    c2.metric("Toplam Bütçe", f"{toplam_pv:,.0f} TL")
+    c3.metric("Hakediş (Kazanılmış)", f"{toplam_ev:,.0f} TL")
+    
+    # Maliyet Performansı (CPI)
+    cpi = toplam_ev / toplam_ac if toplam_ac > 0 else 1.0
+    delta_color = "inverse" if cpi < 1 else "normal"
+    c4.metric("Maliyet Performansı (CPI)", f"{cpi:.2f}", delta=f"{cpi-1:.2f}", delta_color=delta_color)
+
+    st.markdown("---")
+    
+    # 4. Orta Kısım: Grafikler (Sol ve Sağ Sütun)
+    g1, g2 = st.columns(2)
+    
+    with g1:
+        st.markdown("### 🏗️ Disiplinlere Göre Bütçe Dağılımı")
+        df_butce_grup = df_cpm[df_cpm["Bütçe (TL)"] > 0].copy()
+        df_butce_grup['Grup'] = df_butce_grup['WBS Kodu'].str[0]
+        grup_isimleri = {'A': 'Hafriyat/Hazırlık', 'B': 'Temel', 'C': 'Subasman', 'D': 'Üst Yapı'}
+        df_butce_grup['Disiplin'] = df_butce_grup['Grup'].map(grup_isimleri).fillna('Diğer')
+        
+        butce_ozet = df_butce_grup.groupby('Disiplin')['Bütçe (TL)'].sum().reset_index()
+        
+        fig1, ax1 = plt.subplots(figsize=(7, 5))
+        wedges, texts, autotexts = ax1.pie(butce_ozet['Bütçe (TL)'], labels=butce_ozet['Disiplin'], autopct='%1.1f%%', 
+                                           startangle=90, colors=plt.cm.Set3.colors, textprops={'fontsize': 10})
+        ax1.axis('equal')
+        st.pyplot(fig1); plt.close(fig1)
+
+    with g2:
+        st.markdown("### 💰 En Yüksek Bütçeli 5 Kalem ve İlerlemesi")
+        en_pahali_kalemler.sort(key=lambda x: x["Bütçe"], reverse=True)
+        top5 = en_pahali_kalemler[:5]
+        
+        fig2, ax2 = plt.subplots(figsize=(7, 5))
+        isimler = [k["İş Kalemi"][:20] + "..." for k in top5]
+        butceler = [k["Bütçe"] for k in top5]
+        
+        bars = ax2.barh(isimler, butceler, color='#1976D2', alpha=0.7, edgecolor='black')
+        
+        for bar, kalem in zip(bars, top5):
+            ax2.text(bar.get_width() / 2, bar.get_y() + bar.get_height()/2, 
+                     f'%{kalem["İlerleme"]:.0f}', 
+                     ha='center', va='center', color='white', fontweight='bold', fontsize=9)
+                     
+        ax2.set_xlabel("Bütçe (TL)")
+        ax2.invert_yaxis()
+        st.pyplot(fig2); plt.close(fig2)
+
+    st.markdown("---")
+    
+    # 5. Alt Kısım: Detaylı Tablo
+    st.markdown("### 📋 Detaylı İş Programı ve Saha İlerlemesi")
+    df_gosterim = df_veri.copy()
+    df_gosterim["İlerleme %"] = df_gosterim["WBS"].map(guncel_ilerleme).fillna(0).astype(int)
+    st.dataframe(df_gosterim, use_container_width=True)
+    
+    st.info("💡 İlerleme yüzdelerini değiştirmek için '4. Bütçe & Maliyet (EVM)' sekmesini kullanın.")
+
 elif modul == "2. CPM & Kritik Yol": 
     st.subheader("⏱️ CPM Sonuçları"); st.dataframe(df_cpm, use_container_width=True)
 elif modul == "3. Gantt Şeması":
@@ -274,7 +354,7 @@ elif modul == "3. Gantt Şeması":
     ax.set_xlabel("Proje Günü"); ax.grid(axis='x', linestyle=':', alpha=0.6); st.pyplot(fig); plt.close(fig)
 elif modul == "4. Bütçe & Maliyet (EVM)":
     st.subheader("💰 Kazanılmış Değer Yönetimi (EVM) ve Hakediş")
-    st.info("💡 İlerleme yüzdelerini değiştirdiğinizde sistem otomatik olarak **Neon SQL veritabanına kaydeder**. Sayfayı yenileseniz veya uygulama yeniden başlasa bile verileriniz korunur.")
+    st.info("💡 İlerleme yüzdelerini değiştirdiğinizde sistem otomatik olarak **Neon SQL veritabanına kaydeder**.")
     
     edited_df = st.data_editor(st.session_state.evm_df, column_config={
         "WBS Kodu": st.column_config.TextColumn("WBS", disabled=True),
@@ -283,7 +363,6 @@ elif modul == "4. Bütçe & Maliyet (EVM)":
         "İlerleme %": st.column_config.NumberColumn("İlerleme %", min_value=0, max_value=100, step=5, format="%d %%")
     }, hide_index=True, use_container_width=True, key="evm_editor")
     
-    # Veritabanına kaydet (değişiklikleri algıla)
     for _, row in edited_df.iterrows():
         ilerleme_kaydet(row["WBS Kodu"], row["İlerleme %"])
     
@@ -326,11 +405,4 @@ elif modul == "6. Nakit Akışı (S-Eğrisi)":
         fig, ax1 = plt.subplots(figsize=(12, 6))
         ax1.bar(df_nakit["Ay"], df_nakit["Aylık Harcama (TL)"], color="#1976D2", alpha=0.6, label="Aylık Harcama")
         ax1.set_xlabel("Proje Ayı"); ax1.set_ylabel("Aylık Harcama (TL)", color="#1976D2")
-        ax2 = ax1.twinx()
-        ax2.plot(df_nakit["Ay"], df_nakit["Kümülatif Harcama (TL)"], color="#D32F2F", linewidth=3, marker='o', label="Kümülatif")
-        ax2.set_ylabel("Kümülatif Harcama (TL)", color="#D32F2F")
-        plt.title("Proje Nakit Akışı (S-Eğrisi)", fontsize=14, fontweight='bold')
-        fig.tight_layout(); st.pyplot(fig); plt.close(fig)
-        st.dataframe(df_nakit, use_container_width=True)
-    else:
-        st.warning("Nakit akışı hesaplamak için bütçesi olan aktivite bulunamadı.")
+        ax2 = ax1.twin
