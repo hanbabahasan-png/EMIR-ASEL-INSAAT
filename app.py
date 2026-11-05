@@ -13,6 +13,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 from sqlalchemy import text
 from PIL import Image
+from streamlit_option_menu import option_menu
 
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
@@ -23,7 +24,73 @@ plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
 
 st.set_page_config(page_title="Emir Asel İnşaat — Proje Yönetimi", page_icon="🏗️", layout="wide")
 
-# Logo'yu sol üst köşeye ekle (Tüm olası dosya adlarını otomatik arar)
+# ============================================================
+# PROFESYONEL TASARIM (CSS) - Logoya Uygun Kırmızı/Lacivert Tema
+# ============================================================
+st.markdown("""
+<style>
+    /* Genel Arka Plan */
+    .stApp {
+        background-color: #F8F9FA;
+    }
+    
+    /* Başlık Konteyneri */
+    .header-container {
+        background: linear-gradient(135deg, #0A192F 0%, #112240 100%);
+        padding: 20px 30px;
+        border-radius: 15px;
+        color: white;
+        margin-bottom: 25px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    .header-title {
+        color: white !important;
+        font-size: 28px !important;
+        font-weight: 800 !important;
+        margin: 0;
+        letter-spacing: 1px;
+    }
+    
+    /* Metrik Kartları (KPI) */
+    div[data-testid="stMetric"] {
+        background-color: white;
+        border-radius: 10px;
+        padding: 15px 20px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        border-left: 5px solid #E63946; /* Logo Kırmızısı */
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    div[data-testid="stMetric"]:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 5px 15px rgba(230, 57, 70, 0.2);
+    }
+    
+    /* Veri Tabloları */
+    div[data-testid="stDataFrame"] {
+        border-radius: 10px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        background-color: white;
+        padding: 10px;
+    }
+    
+    /* Bilgi ve Uyarı Kutuları */
+    div[data-testid="stInfo"] {
+        background-color: #E3F2FD;
+        border-left: 5px solid #1976D2;
+        border-radius: 5px;
+    }
+    
+    /* Kenar Çubuğu (Sidebar) */
+    section[data-testid="stSidebar"] {
+        background-color: #FFFFFF;
+        border-right: 1px solid #EAEAEA;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ============================================================
+# LOGO VE VERİTABANI BAĞLANTISI
+# ============================================================
 logo = None
 olasi_dosyalar = ["logo.png", "logo.png.webp", "logo.webp", "logo.jpg", "logo.jpeg"]
 for dosya in olasi_dosyalar:
@@ -37,9 +104,6 @@ for dosya in olasi_dosyalar:
 if logo:
     st.sidebar.image(logo, use_container_width=True)
 
-# ============================================================
-# VERİTABANI BAĞLANTISI (NEON POSTGRESQL)
-# ============================================================
 try:
     conn = st.connection("neon", type="sql")
 except Exception as e:
@@ -49,10 +113,33 @@ except Exception as e:
 def init_db():
     try:
         with conn.session as s:
+            # İlerleme tablosu
             s.execute(text("""
                 CREATE TABLE IF NOT EXISTS ilerleme (
                     wbs_kodu TEXT PRIMARY KEY,
                     ilerleme_yuzdesi INTEGER DEFAULT 0
+                )
+            """))
+            # Satın Alma tablosu
+            s.execute(text("""
+                CREATE TABLE IF NOT EXISTS satin_alma (
+                    id SERIAL PRIMARY KEY,
+                    malzeme TEXT,
+                    tedarikci TEXT,
+                    tutar NUMERIC,
+                    durum TEXT,
+                    tarih TEXT
+                )
+            """))
+            # İşçilik tablosu
+            s.execute(text("""
+                CREATE TABLE IF NOT EXISTS iscilik (
+                    id SERIAL PRIMARY KEY,
+                    ekip TEXT,
+                    is_tanimi TEXT,
+                    adet INTEGER,
+                    yevmiye NUMERIC,
+                    tarih TEXT
                 )
             """))
             s.commit()
@@ -60,16 +147,13 @@ def init_db():
         st.warning(f"Tablo oluşturulamadı: {e}")
 
 def ilerleme_kaydet(wbs, yuzde):
-    try:
-        with conn.session as s:
-            s.execute(text("""
-                INSERT INTO ilerleme (wbs_kodu, ilerleme_yuzdesi) 
-                VALUES (:wbs, :yuzde)
-                ON CONFLICT(wbs_kodu) DO UPDATE SET ilerleme_yuzdesi = :yuzde
-            """), {"wbs": wbs, "yuzde": yuzde})
-            s.commit()
-    except Exception as e:
-        st.error(f"Kayıt hatası: {e}")
+    with conn.session as s:
+        s.execute(text("""
+            INSERT INTO ilerleme (wbs_kodu, ilerleme_yuzdesi) 
+            VALUES (:wbs, :yuzde)
+            ON CONFLICT(wbs_kodu) DO UPDATE SET ilerleme_yuzdesi = :yuzde
+        """), {"wbs": wbs, "yuzde": yuzde})
+        s.commit()
 
 def ilerleme_yukle():
     try:
@@ -81,7 +165,7 @@ def ilerleme_yukle():
 init_db()
 
 # ============================================================
-# VARSAYILAN VERİ
+# VARSAYILAN VERİ (CPM & Bütçe)
 # ============================================================
 @st.cache_data
 def varsayilan_veri():
@@ -193,29 +277,32 @@ def cpm_hesapla(df_raw, baslangic="2026-01-15"):
     return pd.DataFrame(rows), proje_bitis, toplam_butce
 
 # ============================================================
-# YARDIMCI FONKSİYONLAR
+# ANA UYGULAMA VE SEKMELER
 # ============================================================
-def pdf_rapor(df_cpm, proje_suresi):
-    buf = io.BytesIO(); doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=25, leftMargin=25, topMargin=25, bottomMargin=25)
-    el = []; styles = getSampleStyleSheet(); title = ParagraphStyle('T', parent=styles['Heading1'], fontSize=14, textColor=colors.HexColor("#1976D2"), spaceAfter=8, alignment=1)
-    el.append(Paragraph("<b>EMİR ASEL İNŞAAT — CPM PROJE RAPORU</b>", title)); el.append(Paragraph(f"<b>Tarih:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}", styles['Normal'])); el.append(Spacer(1, 10))
-    kritik = df_cpm[df_cpm["Kritik Mi?"]=="EVET"]; ozet = [["Metrik","Değer"], ["Proje Toplam Süresi", f"{proje_suresi} gün"], ["Toplam Aktivite", str(len(df_cpm))], ["Kritik Aktivite", str(len(kritik))]]
-    t = Table(ozet, colWidths=[200, 150]); t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor("#1976D2")), ('TEXTCOLOR',(0,0),(-1,0),colors.white), ('GRID',(0,0),(-1,-1),0.5,colors.grey), ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold')])); el.append(t)
-    doc.build(el); buf.seek(0); return buf.getvalue()
+# Başlık Tasarımı
+st.markdown("""
+<div class="header-container">
+    <h1 class="header-title">🏗️ EMİR ASEL İNŞAAT — PROJE YÖNETİM PANELİ</h1>
+</div>
+""", unsafe_allow_html=True)
 
-def excel_cikti(df_cpm):
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine='openpyxl') as w:
-        df_cpm.to_excel(w, sheet_name="CPM_Detay", index=False)
-        df_cpm[df_cpm["Kritik Mi?"]=="EVET"].to_excel(w, sheet_name="Kritik_Yol", index=False)
-    buf.seek(0); return buf.getvalue()
+# Sekmeler (Profesyonel Görünüm)
+secili_sekme = option_menu(
+    menu_title=None,
+    options=["Dashboard", "CPM & Gantt", "EVM & Maliyet", "Satın Alma", "İşçilik", "Raporlar"],
+    icons=["speedometer2", "diagram-3", "cash-coin", "cart", "people", "file-earmark-pdf"],
+    menu_icon="cast",
+    default_index=0,
+    orientation="horizontal",
+    styles={
+        "container": {"padding": "0!important", "background-color": "#FFFFFF", "border-radius": "10px", "box-shadow": "0 2px 4px rgba(0,0,0,0.05)"},
+        "icon": {"color": "#1976D2", "font-size": "16px"}, 
+        "nav-link": {"font-size": "15px", "text-align": "center", "margin": "0px", "--hover-color": "#F0F2F6", "font-weight": "500"},
+        "nav-link-selected": {"background-color": "#E63946", "color": "white"},
+    }
+)
 
-# ============================================================
-# ANA UYGULAMA
-# ============================================================
-st.title("🏗️ Emir Asel İnşaat — Proje Yönetim Paneli")
-st.caption("CPM • EVM • Gantt • Monte Carlo • Nakit Akışı • Neon SQL Veritabanı")
-
+# Yan Menü Veri Yükleme
 st.sidebar.header("📂 Proje Verisi Yükle")
 uploaded_excel = st.sidebar.file_uploader("Excel Yükle (WBS, Süre, Bütçe)", type=["xlsx"])
 
@@ -248,30 +335,21 @@ if uploaded_excel is not None:
         st.sidebar.error(f"❌ Excel okunamadı: {e}")
 
 df_cpm, proje_suresi, toplam_butce = cpm_hesapla(df_veri)
-
 kayitli_ilerleme = ilerleme_yukle()
 evm_baslangic = df_cpm[df_cpm["Bütçe (TL)"] > 0][["WBS Kodu", "İş Kalemi", "Bütçe (TL)"]].copy()
 evm_baslangic["İlerleme %"] = evm_baslangic["WBS Kodu"].map(kayitli_ilerleme).fillna(0).astype(int)
-st.session_state.evm_df = evm_baslangic
 
 with st.sidebar:
     st.header("📊 Proje Özeti")
     st.metric("Toplam Süre", f"{proje_suresi} gün")
     st.metric("Kritik Aktivite", len(df_cpm[df_cpm["Kritik Mi?"]=="EVET"]))
     st.metric("Toplam Bütçe", f"{toplam_butce:,.0f} TL")
-    st.divider()
-    st.subheader("📥 İndir")
-    st.download_button("📄 PDF Rapor", pdf_rapor(df_cpm, proje_suresi), "CPM_Rapor.pdf", "application/pdf")
-    st.download_button("📊 CPM Excel", excel_cikti(df_cpm), "CPM_Sonuc.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-modul = st.selectbox("Modül Seç", [
-    "1. İş Programı Verisi", "2. CPM & Kritik Yol", "3. Gantt Şeması", 
-    "4. Bütçe & Maliyet (EVM)", "5. Monte Carlo Simülasyonu", "6. Nakit Akışı (S-Eğrisi)"
-])
+# ============================================================
+# SEKME İÇERİKLERİ
+# ============================================================
 
-if modul == "1. İş Programı Verisi":
-    st.subheader("📊 Proje Yönetim Paneli (Dashboard)")
-    
+if secili_sekme == "Dashboard":
     guncel_ilerleme = ilerleme_yukle()
     toplam_pv, toplam_ev, toplam_ac = 0, 0, 0
     en_pahali_kalemler = []
@@ -332,24 +410,29 @@ if modul == "1. İş Programı Verisi":
     df_gosterim = df_veri.copy()
     df_gosterim["İlerleme %"] = df_gosterim["WBS"].map(guncel_ilerleme).fillna(0).astype(int)
     st.dataframe(df_gosterim, use_container_width=True)
-    st.info("💡 İlerleme yüzdelerini değiştirmek için '4. Bütçe & Maliyet (EVM)' sekmesini kullanın.")
 
-elif modul == "2. CPM & Kritik Yol": 
-    st.subheader("⏱️ CPM Sonuçları"); st.dataframe(df_cpm, use_container_width=True)
-elif modul == "3. Gantt Şeması":
-    st.subheader("📊 Gantt & Kritik Yol")
-    df = df_cpm.iloc[::-1].reset_index(drop=True); fig, ax = plt.subplots(figsize=(12, max(6, len(df)*0.4)))
-    for i, r in df.iterrows():
-        crit = r["Kritik Mi?"]=="EVET"; col = "#D32F2F" if crit else "#1976D2"
-        ax.barh(i, r["Süre (Gün)"], left=r["ES"], height=0.55, color=col, edgecolor="black")
-        ax.text(r["ES"]+r["Süre (Gün)"]/2, i, f"{r['Süre (Gün)']}g", ha='center', va='center', color='white', fontsize=7, fontweight='bold')
-    ax.set_yticks(range(len(df))); ax.set_yticklabels([f"[{r['WBS Kodu']}] {r['İş Kalemi'][:28]}" for _,r in df.iterrows()], fontsize=8)
-    ax.set_xlabel("Proje Günü"); ax.grid(axis='x', linestyle=':', alpha=0.6); st.pyplot(fig); plt.close(fig)
-elif modul == "4. Bütçe & Maliyet (EVM)":
-    st.subheader("💰 Kazanılmış Değer Yönetimi (EVM) ve Hakediş")
+elif secili_sekme == "CPM & Gantt":
+    st.subheader("⏱️ CPM Sonuçları ve Gantt Şeması")
+    
+    tab1, tab2 = st.tabs(["Gantt Şeması", "Kritik Yol Detayları"])
+    
+    with tab1:
+        df = df_cpm.iloc[::-1].reset_index(drop=True); fig, ax = plt.subplots(figsize=(12, max(6, len(df)*0.4)))
+        for i, r in df.iterrows():
+            crit = r["Kritik Mi?"]=="EVET"; col = "#E63946" if crit else "#1976D2"
+            ax.barh(i, r["Süre (Gün)"], left=r["ES"], height=0.55, color=col, edgecolor="black")
+            ax.text(r["ES"]+r["Süre (Gün)"]/2, i, f"{r['Süre (Gün)']}g", ha='center', va='center', color='white', fontsize=7, fontweight='bold')
+        ax.set_yticks(range(len(df))); ax.set_yticklabels([f"[{r['WBS Kodu']}] {r['İş Kalemi'][:28]}" for _,r in df.iterrows()], fontsize=8)
+        ax.set_xlabel("Proje Günü"); ax.grid(axis='x', linestyle=':', alpha=0.6); st.pyplot(fig); plt.close(fig)
+    
+    with tab2:
+        st.dataframe(df_cpm, use_container_width=True)
+
+elif secili_sekme == "EVM & Maliyet":
+    st.subheader("💰 Kazanılmış Değer Yönetimi (EVM)")
     st.info("💡 İlerleme yüzdelerini değiştirdiğinizde sistem otomatik olarak **Neon SQL veritabanına kaydeder**.")
     
-    edited_df = st.data_editor(st.session_state.evm_df, column_config={
+    edited_df = st.data_editor(evm_baslangic, column_config={
         "WBS Kodu": st.column_config.TextColumn("WBS", disabled=True),
         "İş Kalemi": st.column_config.TextColumn("İş Kalemi", disabled=True, width="large"),
         "Bütçe (TL)": st.column_config.NumberColumn("Bütçe (TL)", format="%,.0f", disabled=True),
@@ -359,47 +442,55 @@ elif modul == "4. Bütçe & Maliyet (EVM)":
     for _, row in edited_df.iterrows():
         ilerleme_kaydet(row["WBS Kodu"], row["İlerleme %"])
     
-    st.session_state.evm_df = edited_df
     st.markdown("---")
-    st.markdown("### Maliyet Performansı (EVM)")
+    st.markdown("### Maliyet Performansı")
     toplam_pv, toplam_ev, toplam_ac = 0, 0, 0
     for _, row in edited_df.iterrows():
         butce = row["Bütçe (TL)"]; ilerleme = row["İlerleme %"] / 100.0
         toplam_pv += butce; toplam_ev += butce * ilerleme; toplam_ac += (butce * ilerleme) * 1.10
-    cpi = toplam_ev / toplam_ac if toplam_ac > 0 else 1.0; spi = toplam_ev / toplam_pv if toplam_pv > 0 else 1.0; eac = toplam_butce / cpi if cpi > 0 else toplam_butce
-    k1, k2, k3, k4 = st.columns(4)
+    cpi = toplam_ev / toplam_ac if toplam_ac > 0 else 1.0
+    k1, k2, k3 = st.columns(3)
     k1.metric("Kazanılmış Değer (EV)", f"{toplam_ev:,.0f} TL")
     k2.metric("Gerçekleşen Maliyet (AC)", f"{toplam_ac:,.0f} TL")
     k3.metric("Maliyet Performansı (CPI)", f"{cpi:.2f}", delta=f"{cpi-1:.2f}", delta_color="inverse")
-    k4.metric("Tahmini Tamamlanma (EAC)", f"{eac:,.0f} TL")
-elif modul == "5. Monte Carlo Simülasyonu":
-    st.subheader("🎲 Süre Risk Analizi"); n = st.slider("İterasyon", 100, 2000, 500, 100)
-    if st.button("Çalıştır"):
-        np.random.seed(42); s = [sum(np.random.triangular(r["Süre (Gün)"]*0.85, r["Süre (Gün)"], r["Süre (Gün)"]*1.35) for _, r in df_cpm.iterrows()) for _ in range(n)]
-        p50, p80, p90 = np.percentile(s, [50,80,90]); c1,c2,c3 = st.columns(3)
-        c1.metric("P50", f"{p50:.0f}g"); c2.metric("P80", f"{p80:.0f}g"); c3.metric("P90", f"{p90:.0f}g")
-        fig, ax = plt.subplots(figsize=(10,4)); ax.hist(s, bins=35, color="#1976D2", edgecolor="black", alpha=0.75, density=True)
-        for v,c,l in [(p50,'#388E3C','P50'),(p80,'#F57C00','P80'),(p90,'#D32F2F','P90')]: ax.axvline(v, color=c, ls='--', lw=2, label=f"{l} ({v:.0f}g)")
-        ax.set_xlabel("Gün"); ax.legend(); st.pyplot(fig); plt.close(fig)
-elif modul == "6. Nakit Akışı (S-Eğrisi)":
-    st.subheader("📈 Aylık Nakit Akışı (Cash Flow)")
-    aylik_harcama = {}
-    for _, row in df_cpm.iterrows():
-        if row["Bütçe (TL)"] > 0:
-            sure_ay = max(1, row["Süre (Gün)"] / 30.0)
-            aylik_maliyet = row["Bütçe (TL)"] / sure_ay
-            baslangic_ayi = (row["ES"] - 1) // 30 + 1
-            bitis_ayi = (row["EF"] - 1) // 30 + 1
-            for ay in range(baslangic_ayi, bitis_ayi + 1):
-                aylik_harcama[ay] = aylik_harcama.get(ay, 0) + aylik_maliyet
-    if aylik_harcama:
-        df_nakit = pd.DataFrame(list(aylik_harcama.items()), columns=["Ay", "Aylık Harcama (TL)"]).sort_values("Ay")
-        df_nakit["Kümülatif Harcama (TL)"] = df_nakit["Aylık Harcama (TL)"].cumsum()
-        fig, ax1 = plt.subplots(figsize=(12, 6))
-        ax1.bar(df_nakit["Ay"], df_nakit["Aylık Harcama (TL)"], color="#1976D2", alpha=0.6, label="Aylık Harcama")
-        ax1.set_xlabel("Proje Ayı"); ax1.set_ylabel("Aylık Harcama (TL)", color="#1976D2")
-        ax2 = ax1.twinx()
-        ax2.plot(df_nakit["Ay"], df_nakit["Kümülatif Harcama (TL)"], color="#D32F2F", linewidth=3, marker='o', label="Kümülatif")
-        ax2.set_ylabel("Kümülatif Harcama (TL)", color="#D32F2F")
-        plt.title("Proje Nakit Akışı (S-Eğrisi)", fontsize=14, fontweight='bold')
-       
+
+elif secili_sekme == "Satın Alma":
+    st.subheader("🛒 Satın Alma ve Tedarik Takibi")
+    
+    with st.expander("➕ Yeni Satın Alma Kaydı Ekle", expanded=False):
+        with st.form("satin_alma_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                malzeme = st.text_input("Malzeme / Hizmet Adı")
+                tedarikci = st.text_input("Tedarikçi Firma")
+                tutar = st.number_input("Toplam Tutar (TL)", min_value=0.0, step=1000.0)
+            with col2:
+                durum = st.selectbox("Sipariş Durumu", ["Teklif Alındı", "Sipariş Verildi", "Teslim Edildi", "İptal"])
+                tarih = st.date_input("İşlem Tarihi")
+            
+            submit_sa = st.form_submit_button("Kaydet")
+            if submit_sa and malzeme:
+                with conn.session as s:
+                    s.execute(text("""
+                        INSERT INTO satin_alma (malzeme, tedarikci, tutar, durum, tarih) 
+                        VALUES (:m, :t, :u, :d, :tr)
+                    """), {"m": malzeme, "t": tedarikci, "u": tutar, "d": durum, "tr": str(tarih)})
+                    s.commit()
+                st.success("Satın alma kaydı başarıyla eklendi!")
+                st.rerun()
+
+    # Kayıtları Listele
+    try:
+        df_sa = conn.query("SELECT id, malzeme, tedarikci, tutar, durum, tarih FROM satin_alma ORDER BY id DESC", ttl=0)
+        st.dataframe(df_sa, use_container_width=True)
+    except Exception:
+        st.info("Henüz satın alma kaydı bulunmuyor.")
+
+elif secili_sekme == "İşçilik":
+    st.subheader("👷 İşçilik ve Puantaj Takibi")
+    
+    with st.expander("➕ Yeni Puantaj Kaydı Ekle", expanded=False):
+        with st.form("iscilik_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                ekip = st.text_input("Ekip
