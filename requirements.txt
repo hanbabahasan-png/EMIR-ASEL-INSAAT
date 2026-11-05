@@ -4,5 +4,7 @@ numpy
 matplotlib
 openpyxl
 reportlab
+pdfplumber
 sqlalchemy
 psycopg2-binary
+psycopg
