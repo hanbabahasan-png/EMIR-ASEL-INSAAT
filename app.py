@@ -10,7 +10,6 @@ import io
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
-import pdfplumber
 
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
@@ -153,16 +152,13 @@ def excel_cikti(df_cpm):
 # ANA UYGULAMA
 # ============================================================
 st.title("🏗️ Ünzüle Hanbaba — İnşaat Proje Yönetimi Paneli")
-st.caption("CPM • EVM • Gantt • Monte Carlo • Nakit Akışı • PDF/Excel Yükleme")
+st.caption("CPM • EVM • Gantt • Monte Carlo • Nakit Akışı • Excel Yükleme")
 
 # --- YAN MENÜ: DOSYA YÜKLEME ---
 st.sidebar.header("📂 Proje Verisi Yükle")
 
-# 1. Excel Yükleme
+# Excel Yükleme
 uploaded_excel = st.sidebar.file_uploader("Excel Yükle (WBS, Süre, Bütçe)", type=["xlsx"])
-
-# 2. PDF Yükleme
-uploaded_pdf = st.sidebar.file_uploader("PDF Yükle (Tablo Çıkarma)", type=["pdf"])
 
 df_veri = varsayilan_veri()
 
@@ -178,21 +174,6 @@ if uploaded_excel is not None:
             st.sidebar.error("❌ Excel'de eksik sütunlar var. Varsayılan veri kullanılıyor.")
     except Exception as e:
         st.sidebar.error(f"❌ Excel okunamadı: {e}")
-
-if uploaded_pdf is not None:
-    try:
-        with pdfplumber.open(uploaded_pdf) as pdf:
-            ilk_sayfa = pdf.pages[0]
-            tablolar = ilk_sayfa.extract_tables()
-            if tablolar:
-                st.sidebar.success(f"✅ PDF'ten {len(tablolar)} tablo bulundu! (İlk sayfa)")
-                df_pdf = pd.DataFrame(tablolar[0][1:], columns=tablolar[0][0]) 
-                with st.sidebar.expander("PDF'ten Çıkarılan Tabloyu Gör"):
-                    st.dataframe(df_pdf)
-            else:
-                st.sidebar.warning("⚠️ PDF'te tablo bulunamadı (Taranmış resim olabilir).")
-    except Exception as e:
-        st.sidebar.error(f"❌ PDF okunamadı: {e}")
 
 df_cpm, proje_suresi, toplam_butce = cpm_hesapla(df_veri)
 
