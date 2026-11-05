@@ -25,7 +25,6 @@ st.set_page_config(page_title="Ünzüle Hanbaba — İnşaat Proje Yönetimi", p
 # ============================================================
 @st.cache_data
 def is_programi_verisi_uret():
-    # WBS, İş Kalemi, Süre, Önceki, Tip, Bütçe (TL)
     veriler = [
         ["A01","Hafriyat kazı",15,"","FS", 95000],
         ["A02","Grobeton C15/20",5,"A01","FS", 61000],
@@ -58,17 +57,14 @@ def is_programi_verisi_uret():
         ["D06","Perde donatı Ø14",3,"D02","FS", 7900],
         ["D07","Kolon kalıbı",8,"D03,D04","FS", 21400],
         ["D08","Perde kalıbı",6,"D05,D06","FS", 15600],
-        # Diğer kalemler test için bütçesiz (0) bırakıldı. İstenirse eklenebilir.
     ]
     df = pd.DataFrame(veriler, columns=["WBS","İş Kalemi","Süre (Gün)","Önceki Aktivite","Bağımlılık Tipi","Bütçe (TL)"])
     
-    # Boş sütunları ekle
     for col in ["Sorumlu","Plan Başlangıç","Plan Bitiş","Fiili Başlangıç","Fiili Bitiş",
                 "Plan İlerleme %","Fiili İlerleme %","Ağırlık %","Ağırlıklı İlerleme %",
                 "Durum","Gecikme (gün)","Kanıt / Saha Notu"]:
         df[col] = ""
         
-    # Sütun sırasını düzenle (Bütçe en sona)
     df = df[["WBS","İş Kalemi","Sorumlu","Plan Başlangıç","Plan Bitiş",
              "Fiili Başlangıç","Fiili Bitiş","Plan İlerleme %","Fiili İlerleme %",
              "Ağırlık %","Ağırlıklı İlerleme %","Durum","Gecikme (gün)",
@@ -92,7 +88,6 @@ def cpm_hesapla(df_raw, baslangic="2026-01-15"):
         preds = [p.strip() for p in preds_raw.split(',') if p.strip()]
         dtype = str(row["Bağımlılık Tipi"]).upper() if pd.notna(row["Bağımlılık Tipi"]) else "FS"
         if dtype not in ["FS","SS","FF","SF"]: dtype = "FS"
-        
         butce = float(row["Bütçe (TL)"]) if pd.notna(row["Bütçe (TL)"]) else 0.0
 
         akt[wbs] = {'WBS':wbs,'Task':str(row["İş Kalemi"]),'Dur':dur,
@@ -157,10 +152,6 @@ def cpm_hesapla(df_raw, baslangic="2026-01-15"):
         a = akt[w]; dur = a['Dur']
         slack = ls[w]-es[w]
         crit = "EVET" if slack==0 else "HAYIR"
-        
-        # Maliyet ağırlığı (EVM için)
-        agirlik_maliyet = (a['Butce'] / toplam_butce * 100) if toplam_butce > 0 else 0
-        
         rows.append({
             "WBS Kodu": w, "İş Kalemi": a['Task'], "Süre (Gün)": dur,
             "Önceki": ",".join(a['Preds']), "Bağlantı": a['Type'],
@@ -285,21 +276,27 @@ elif modul == "3. Gantt Şeması":
 
 elif modul == "4. Bütçe & Maliyet (EVM)":
     st.subheader("💰 Kazanılmış Değer Yönetimi (EVM) ve Hakediş")
+    st.markdown("Sahadaki ilerlemeyi seçin ve sisteme kaydedin. Sistem anında maliyet performansını hesaplayacaktır.")
     
-    # 1. Simülasyon Girişi
-    st.markdown("### Saha İlerlemesini Girin")
+    # Aktivite Seçimi ve İlerleme Girişi (Akıllı Form)
     with st.form("ilerleme_formu"):
-        yeni_ilerleme = {}
-        cols = st.columns(3)
-        for i, row in df_cpm.iterrows():
-            wbs = row["WBS Kodu"]
-            with cols[i % 3]:
-                yeni_ilerleme[wbs] = st.slider(f"{wbs} - {row['İş Kalemi'][:20]}", 0, 100, st.session_state.ilerleme[wbs], key=f"slider_{wbs}")
-        submit = st.form_submit_button("İlerlemeyi Kaydet ve Hesapla")
+        col1, col2 = st.columns(2)
+        with col1:
+            secilen_wbs = st.selectbox(
+                "Aktivite Seçin", 
+                df_cpm["WBS Kodu"].tolist(),
+                format_func=lambda x: f"[{x}] {df_cpm[df_cpm['WBS Kodu']==x]['İş Kalemi'].values[0]}"
+            )
+        with col2:
+            yeni_yuzde = st.slider("Mevcut İlerleme (%)", 0, 100, st.session_state.ilerleme.get(secilen_wbs, 0))
+            
+        submit = st.form_submit_button("İlerlemeyi Kaydet")
         if submit:
-            st.session_state.ilerleme = yeni_ilerleme
+            st.session_state.ilerleme[secilen_wbs] = yeni_yuzde
+            st.success(f"{secilen_wbs} aktivitesi %{yeni_yuzde} olarak kaydedildi.")
+            st.rerun()
 
-    # 2. EVM Hesaplama
+    # EVM Hesaplamaları
     st.markdown("---")
     st.markdown("### Maliyet Performansı (EVM)")
     
@@ -311,27 +308,23 @@ elif modul == "4. Bütçe & Maliyet (EVM)":
     for _, row in df_cpm.iterrows():
         wbs = row["WBS Kodu"]
         butce = row["Bütçe (TL)"]
-        ilerleme = st.session_state.ilerleme[wbs] / 100.0
+        ilerleme = st.session_state.ilerleme.get(wbs, 0) / 100.0
         
-        # Planlanan Değer (PV): Aktivitenin zamanına göre planlanan bütçe (Basit yaklaşım: tam bütçe)
         pv = butce 
-        # Kazanılmış Değer (EV): Gerçekleşen ilerleme * Bütçe
-        ev = butce * ilerleme
-        # Gerçekleşen Maliyet (AC): Simülasyon için EV'yi %10 fazla harcadığımızı varsayalım (CPI = 0.9)
-        ac = ev * 1.10 
+        ev = butce * ilerleme 
+        ac = ev * 1.10 # Simülasyon: %10 fazla harcama
 
         toplam_pv += pv
         toplam_ev += ev
         toplam_ac += ac
         
-        if pv > 0 or ev > 0:
+        if butce > 0:
             evm_rows.append({
                 "WBS": wbs, "İş Kalemi": row["İş Kalemi"], 
-                "Bütçe (BAC)": butce, "İlerleme %": st.session_state.ilerleme[wbs],
-                "PV": pv, "EV": ev, "AC": ac
+                "Bütçe (BAC)": butce, "İlerleme %": st.session_state.ilerleme.get(wbs, 0),
+                "Kazanılmış (EV)": ev, "Gerçekleşen (AC)": ac
             })
 
-    # 3. KPI Kartları
     cpi = toplam_ev / toplam_ac if toplam_ac > 0 else 1.0
     spi = toplam_ev / toplam_pv if toplam_pv > 0 else 1.0
     eac = toplam_butce / cpi if cpi > 0 else toplam_butce
@@ -342,7 +335,7 @@ elif modul == "4. Bütçe & Maliyet (EVM)":
     k3.metric("Maliyet Performansı (CPI)", f"{cpi:.2f}", delta=f"{cpi-1:.2f}", delta_color="inverse")
     k4.metric("Tahmini Tamamlanma (EAC)", f"{eac:,.0f} TL")
 
-    # 4. Tablo
+    st.markdown("### EVM Detay Tablosu")
     st.dataframe(pd.DataFrame(evm_rows), use_container_width=True)
 
 elif modul == "5. Monte Carlo Simülasyonu":
