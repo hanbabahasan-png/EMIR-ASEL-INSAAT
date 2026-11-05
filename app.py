@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from datetime import datetime, timedelta
 import io
+import os
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
@@ -22,12 +23,19 @@ plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
 
 st.set_page_config(page_title="Emir Asel İnşaat — Proje Yönetimi", page_icon="🏗️", layout="wide")
 
-# Logo'yu sol üst köşeye ekle
-try:
-    logo = Image.open("logo.png")
+# Logo'yu sol üst köşeye ekle (Tüm olası dosya adlarını otomatik arar)
+logo = None
+olasi_dosyalar = ["logo.png", "logo.png.webp", "logo.webp", "logo.jpg", "logo.jpeg"]
+for dosya in olasi_dosyalar:
+    if os.path.exists(dosya):
+        try:
+            logo = Image.open(dosya)
+            break
+        except Exception:
+            pass
+
+if logo:
     st.sidebar.image(logo, use_container_width=True)
-except Exception:
-    st.sidebar.warning("Logo bulunamadı. Lütfen 'logo.png' dosyasını GitHub'a yükleyin.")
 
 # ============================================================
 # VERİTABANI BAĞLANTISI (NEON POSTGRESQL)
@@ -73,7 +81,7 @@ def ilerleme_yukle():
 init_db()
 
 # ============================================================
-# VARSAYILAN VERİ (Aktiviteler ve Bütçe)
+# VARSAYILAN VERİ
 # ============================================================
 @st.cache_data
 def varsayilan_veri():
@@ -394,6 +402,4 @@ elif modul == "6. Nakit Akışı (S-Eğrisi)":
         ax2.plot(df_nakit["Ay"], df_nakit["Kümülatif Harcama (TL)"], color="#D32F2F", linewidth=3, marker='o', label="Kümülatif")
         ax2.set_ylabel("Kümülatif Harcama (TL)", color="#D32F2F")
         plt.title("Proje Nakit Akışı (S-Eğrisi)", fontsize=14, fontweight='bold')
-        fig.tight_layout(); st.pyplot(fig); plt.close(fig)
-        st.dataframe(df_nakit, use_container_width=True)
-   
+       
