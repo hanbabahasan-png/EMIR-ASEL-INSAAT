@@ -11,6 +11,7 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 from sqlalchemy import text
+from PIL import Image
 
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
@@ -19,7 +20,14 @@ from reportlab.lib import colors
 
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
 
-st.set_page_config(page_title="Ünzüle Hanbaba — İnşaat Proje Yönetimi", page_icon="🏗️", layout="wide")
+st.set_page_config(page_title="Emir Asel İnşaat — Proje Yönetimi", page_icon="🏗️", layout="wide")
+
+# Logo'yu sol üst köşeye ekle
+try:
+    logo = Image.open("logo.png")
+    st.sidebar.image(logo, use_container_width=True)
+except Exception:
+    st.sidebar.warning("Logo bulunamadı. Lütfen 'logo.png' dosyasını GitHub'a yükleyin.")
 
 # ============================================================
 # VERİTABANI BAĞLANTISI (NEON POSTGRESQL)
@@ -27,7 +35,7 @@ st.set_page_config(page_title="Ünzüle Hanbaba — İnşaat Proje Yönetimi", p
 try:
     conn = st.connection("neon", type="sql")
 except Exception as e:
-    st.error(f"Veritabanı bağlantısı kurulamadı. Lütfen Streamlit Secrets ayarlarını kontrol edin. Hata: {e}")
+    st.error(f"Veritabanı bağlantısı kurulamadı: {e}")
     st.stop()
 
 def init_db():
@@ -41,7 +49,7 @@ def init_db():
             """))
             s.commit()
     except Exception as e:
-        st.warning(f"Veritabanı tablosu oluşturulamadı: {e}")
+        st.warning(f"Tablo oluşturulamadı: {e}")
 
 def ilerleme_kaydet(wbs, yuzde):
     try:
@@ -65,7 +73,7 @@ def ilerleme_yukle():
 init_db()
 
 # ============================================================
-# VARSAYILAN VERİ
+# VARSAYILAN VERİ (Aktiviteler ve Bütçe)
 # ============================================================
 @st.cache_data
 def varsayilan_veri():
@@ -103,7 +111,7 @@ def cpm_hesapla(df_raw, baslangic="2026-01-15"):
         row_dict = {str(k).strip().lower(): v for k, v in row.items()}
         wbs = str(row_dict.get('wbs kodu', row_dict.get('wbs', ''))).strip()
         if not wbs or wbs.lower() in ('nan','none',''): continue
-        task = str(row_dict.get('i̇ş kalemi', row_dict.get('iş kalemi', row_dict.get('i̇ş kalemi / i̇malat tanımı', 'İsimsiz'))))
+        task = str(row_dict.get('i̇ş kalemi', row_dict.get('iş kalemi', 'İsimsiz')))
         try:
             dur = int(float(row_dict.get('süre (gün)', row_dict.get('süre', 1))))
             if dur <= 0: dur = 1
@@ -113,8 +121,7 @@ def cpm_hesapla(df_raw, baslangic="2026-01-15"):
         dtype = str(row_dict.get('bağımlılık tipi', row_dict.get('tip', 'FS'))).upper()
         if dtype not in ["FS","SS","FF","SF"]: dtype = "FS"
         butce_val = row_dict.get('bütçe (tl)', row_dict.get('bütçe tutarı', row_dict.get('bütçe', 0)))
-        try:
-            butce = float(butce_val) if pd.notna(butce_val) else 0.0
+        try: butce = float(butce_val) if pd.notna(butce_val) else 0.0
         except: butce = 0.0
         akt[wbs] = {'WBS':wbs,'Task':task,'Dur':dur, 'Preds':preds,'Type':dtype,'Succ':[], 'Butce': butce}
 
@@ -178,12 +185,12 @@ def cpm_hesapla(df_raw, baslangic="2026-01-15"):
     return pd.DataFrame(rows), proje_bitis, toplam_butce
 
 # ============================================================
-# YARDIMCI FONKSİYONLAR (PDF, EXCEL)
+# YARDIMCI FONKSİYONLAR
 # ============================================================
 def pdf_rapor(df_cpm, proje_suresi):
     buf = io.BytesIO(); doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=25, leftMargin=25, topMargin=25, bottomMargin=25)
     el = []; styles = getSampleStyleSheet(); title = ParagraphStyle('T', parent=styles['Heading1'], fontSize=14, textColor=colors.HexColor("#1976D2"), spaceAfter=8, alignment=1)
-    el.append(Paragraph("<b>ÜNZÜLE HANBABA — CPM PROJE RAPORU</b>", title)); el.append(Paragraph(f"<b>Tarih:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}", styles['Normal'])); el.append(Spacer(1, 10))
+    el.append(Paragraph("<b>EMİR ASEL İNŞAAT — CPM PROJE RAPORU</b>", title)); el.append(Paragraph(f"<b>Tarih:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}", styles['Normal'])); el.append(Spacer(1, 10))
     kritik = df_cpm[df_cpm["Kritik Mi?"]=="EVET"]; ozet = [["Metrik","Değer"], ["Proje Toplam Süresi", f"{proje_suresi} gün"], ["Toplam Aktivite", str(len(df_cpm))], ["Kritik Aktivite", str(len(kritik))]]
     t = Table(ozet, colWidths=[200, 150]); t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor("#1976D2")), ('TEXTCOLOR',(0,0),(-1,0),colors.white), ('GRID',(0,0),(-1,-1),0.5,colors.grey), ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold')])); el.append(t)
     doc.build(el); buf.seek(0); return buf.getvalue()
@@ -198,7 +205,7 @@ def excel_cikti(df_cpm):
 # ============================================================
 # ANA UYGULAMA
 # ============================================================
-st.title("🏗️ Ünzüle Hanbaba — İnşaat Proje Yönetimi Paneli")
+st.title("🏗️ Emir Asel İnşaat — Proje Yönetim Paneli")
 st.caption("CPM • EVM • Gantt • Monte Carlo • Nakit Akışı • Neon SQL Veritabanı")
 
 st.sidebar.header("📂 Proje Verisi Yükle")
@@ -234,7 +241,6 @@ if uploaded_excel is not None:
 
 df_cpm, proje_suresi, toplam_butce = cpm_hesapla(df_veri)
 
-# EVM İlerlemelerini Veritabanından Yükle
 kayitli_ilerleme = ilerleme_yukle()
 evm_baslangic = df_cpm[df_cpm["Bütçe (TL)"] > 0][["WBS Kodu", "İş Kalemi", "Bütçe (TL)"]].copy()
 evm_baslangic["İlerleme %"] = evm_baslangic["WBS Kodu"].map(kayitli_ilerleme).fillna(0).astype(int)
@@ -258,10 +264,7 @@ modul = st.selectbox("Modül Seç", [
 if modul == "1. İş Programı Verisi":
     st.subheader("📊 Proje Yönetim Paneli (Dashboard)")
     
-    # 1. Veritabanından güncel ilerlemeleri çek
     guncel_ilerleme = ilerleme_yukle()
-    
-    # 2. EVM Hesaplamalarını Hazırla (Grafikler için)
     toplam_pv, toplam_ev, toplam_ac = 0, 0, 0
     en_pahali_kalemler = []
     
@@ -272,28 +275,19 @@ if modul == "1. İş Programı Verisi":
             toplam_pv += butce
             ev = butce * ilerleme
             toplam_ev += ev
-            toplam_ac += ev * 1.10 # Varsayım: %10 fazla harcama
+            toplam_ac += ev * 1.10
             en_pahali_kalemler.append({"İş Kalemi": row["İş Kalemi"], "Bütçe": butce, "İlerleme": ilerleme * 100})
 
-    # 3. Üst Kısım: Özet Kartları (KPI)
     c1, c2, c3, c4 = st.columns(4)
-    
-    # Genel Fiziksel İlerleme (%)
     genel_ilerleme = (toplam_ev / toplam_pv * 100) if toplam_pv > 0 else 0
     c1.metric("Genel Fiziksel İlerleme", f"%{genel_ilerleme:.1f}")
-    
-    # Finansal Durum
     c2.metric("Toplam Bütçe", f"{toplam_pv:,.0f} TL")
     c3.metric("Hakediş (Kazanılmış)", f"{toplam_ev:,.0f} TL")
-    
-    # Maliyet Performansı (CPI)
     cpi = toplam_ev / toplam_ac if toplam_ac > 0 else 1.0
     delta_color = "inverse" if cpi < 1 else "normal"
     c4.metric("Maliyet Performansı (CPI)", f"{cpi:.2f}", delta=f"{cpi-1:.2f}", delta_color=delta_color)
 
     st.markdown("---")
-    
-    # 4. Orta Kısım: Grafikler (Sol ve Sağ Sütun)
     g1, g2 = st.columns(2)
     
     with g1:
@@ -302,12 +296,10 @@ if modul == "1. İş Programı Verisi":
         df_butce_grup['Grup'] = df_butce_grup['WBS Kodu'].str[0]
         grup_isimleri = {'A': 'Hafriyat/Hazırlık', 'B': 'Temel', 'C': 'Subasman', 'D': 'Üst Yapı'}
         df_butce_grup['Disiplin'] = df_butce_grup['Grup'].map(grup_isimleri).fillna('Diğer')
-        
         butce_ozet = df_butce_grup.groupby('Disiplin')['Bütçe (TL)'].sum().reset_index()
         
         fig1, ax1 = plt.subplots(figsize=(7, 5))
-        wedges, texts, autotexts = ax1.pie(butce_ozet['Bütçe (TL)'], labels=butce_ozet['Disiplin'], autopct='%1.1f%%', 
-                                           startangle=90, colors=plt.cm.Set3.colors, textprops={'fontsize': 10})
+        wedges, texts, autotexts = ax1.pie(butce_ozet['Bütçe (TL)'], labels=butce_ozet['Disiplin'], autopct='%1.1f%%', startangle=90, colors=plt.cm.Set3.colors, textprops={'fontsize': 10})
         ax1.axis('equal')
         st.pyplot(fig1); plt.close(fig1)
 
@@ -319,26 +311,19 @@ if modul == "1. İş Programı Verisi":
         fig2, ax2 = plt.subplots(figsize=(7, 5))
         isimler = [k["İş Kalemi"][:20] + "..." for k in top5]
         butceler = [k["Bütçe"] for k in top5]
-        
         bars = ax2.barh(isimler, butceler, color='#1976D2', alpha=0.7, edgecolor='black')
         
         for bar, kalem in zip(bars, top5):
-            ax2.text(bar.get_width() / 2, bar.get_y() + bar.get_height()/2, 
-                     f'%{kalem["İlerleme"]:.0f}', 
-                     ha='center', va='center', color='white', fontweight='bold', fontsize=9)
-                     
+            ax2.text(bar.get_width() / 2, bar.get_y() + bar.get_height()/2, f'%{kalem["İlerleme"]:.0f}', ha='center', va='center', color='white', fontweight='bold', fontsize=9)
         ax2.set_xlabel("Bütçe (TL)")
         ax2.invert_yaxis()
         st.pyplot(fig2); plt.close(fig2)
 
     st.markdown("---")
-    
-    # 5. Alt Kısım: Detaylı Tablo
     st.markdown("### 📋 Detaylı İş Programı ve Saha İlerlemesi")
     df_gosterim = df_veri.copy()
     df_gosterim["İlerleme %"] = df_gosterim["WBS"].map(guncel_ilerleme).fillna(0).astype(int)
     st.dataframe(df_gosterim, use_container_width=True)
-    
     st.info("💡 İlerleme yüzdelerini değiştirmek için '4. Bütçe & Maliyet (EVM)' sekmesini kullanın.")
 
 elif modul == "2. CPM & Kritik Yol": 
@@ -405,4 +390,10 @@ elif modul == "6. Nakit Akışı (S-Eğrisi)":
         fig, ax1 = plt.subplots(figsize=(12, 6))
         ax1.bar(df_nakit["Ay"], df_nakit["Aylık Harcama (TL)"], color="#1976D2", alpha=0.6, label="Aylık Harcama")
         ax1.set_xlabel("Proje Ayı"); ax1.set_ylabel("Aylık Harcama (TL)", color="#1976D2")
-        ax2 = ax1.twin
+        ax2 = ax1.twinx()
+        ax2.plot(df_nakit["Ay"], df_nakit["Kümülatif Harcama (TL)"], color="#D32F2F", linewidth=3, marker='o', label="Kümülatif")
+        ax2.set_ylabel("Kümülatif Harcama (TL)", color="#D32F2F")
+        plt.title("Proje Nakit Akışı (S-Eğrisi)", fontsize=14, fontweight='bold')
+        fig.tight_layout(); st.pyplot(fig); plt.close(fig)
+        st.dataframe(df_nakit, use_container_width=True)
+   
