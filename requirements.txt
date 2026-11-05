@@ -10,4 +10,3 @@ networkx
 reportlab
 pillow
 streamlit-option-menu
-matplotlib
