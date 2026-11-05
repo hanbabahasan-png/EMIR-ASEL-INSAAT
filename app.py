@@ -21,7 +21,7 @@ plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
 st.set_page_config(page_title="Ünzüle Hanbaba — İnşaat Proje Yönetimi", page_icon="🏗️", layout="wide")
 
 # ============================================================
-# VARSAYILAN VERİ
+# VERİ ÜRETİCİ (Varsayılan 30 Aktiviteli Veri)
 # ============================================================
 @st.cache_data
 def varsayilan_veri():
@@ -56,18 +56,33 @@ def varsayilan_veri():
 def cpm_hesapla(df_raw, baslangic="2026-01-15"):
     akt = {}
     for _, row in df_raw.iterrows():
-        wbs = str(row["WBS"]).strip()
+        # Sütun isimlerini normalize et (Büyük/küçük harf ve boşluk duyarsız)
+        row_dict = {str(k).strip().lower(): v for k, v in row.items()}
+        
+        wbs = str(row_dict.get('wbs kodu', row_dict.get('wbs', ''))).strip()
         if not wbs or wbs.lower() in ('nan','none',''): continue
+        
+        task = str(row_dict.get('i̇ş kalemi', row_dict.get('iş kalemi', row_dict.get('i̇ş kalemi / i̇malat tanımı', 'İsimsiz'))))
+        
         try:
-            dur = int(float(row["Süre (Gün)"])) if pd.notna(row["Süre (Gün)"]) else 1
+            dur = int(float(row_dict.get('süre (gün)', row_dict.get('süre', 1))))
             if dur <= 0: dur = 1
         except: dur = 1
-        preds_raw = str(row["Önceki Aktivite"]) if pd.notna(row["Önceki Aktivite"]) else ""
-        preds = [p.strip() for p in preds_raw.split(',') if p.strip()]
-        dtype = str(row["Bağımlılık Tipi"]).upper() if pd.notna(row["Bağımlılık Tipi"]) else "FS"
+        
+        preds_raw = str(row_dict.get('önceki aktivite', row_dict.get('önceki', '')))
+        preds = [p.strip() for p in preds_raw.split(',') if p.strip() and p.strip().lower() != 'nan']
+        
+        dtype = str(row_dict.get('bağımlılık tipi', row_dict.get('tip', 'FS'))).upper()
         if dtype not in ["FS","SS","FF","SF"]: dtype = "FS"
-        butce = float(row["Bütçe (TL)"]) if pd.notna(row["Bütçe (TL)"]) else 0.0
-        akt[wbs] = {'WBS':wbs,'Task':str(row["İş Kalemi"]),'Dur':dur, 'Preds':preds,'Type':dtype,'Succ':[], 'Butce': butce}
+        
+        # Bütçe: "Bütçe (TL)" veya "Bütçe Tutarı" sütununu ara
+        butce_val = row_dict.get('bütçe (tl)', row_dict.get('bütçe tutarı', row_dict.get('bütçe', 0)))
+        try:
+            butce = float(butce_val) if pd.notna(butce_val) else 0.0
+        except: butce = 0.0
+
+        akt[wbs] = {'WBS':wbs,'Task':task,'Dur':dur, 'Preds':preds,'Type':dtype,'Succ':[], 'Butce': butce}
+
     wbs_set = set(akt.keys())
     for w, a in akt.items():
         valid = []
@@ -76,6 +91,7 @@ def cpm_hesapla(df_raw, baslangic="2026-01-15"):
                 valid.append(p)
                 akt[p]['Succ'].append({'wbs':w,'type':a['Type']})
         a['Preds'] = valid
+
     in_d = {w: len(a['Preds']) for w,a in akt.items()}
     q = [w for w,d in in_d.items() if d==0]
     topo = []
@@ -84,6 +100,7 @@ def cpm_hesapla(df_raw, baslangic="2026-01-15"):
         for s in akt[c]['Succ']:
             in_d[s['wbs']] -= 1
             if in_d[s['wbs']]==0: q.append(s['wbs'])
+            
     es, ef = {}, {}
     for w in topo:
         a = akt[w]; dur = a['Dur']
@@ -97,7 +114,9 @@ def cpm_hesapla(df_raw, baslangic="2026-01-15"):
                 elif a['Type']=="SF": ef_l.append(es[p])
             e_start = max(es_l) if es_l else (max(ef_l)-dur+1 if ef_l else 1)
         es[w] = max(1, e_start); ef[w] = es[w]+dur-1
+        
     proje_bitis = max(ef.values()) if ef else 1
+    
     ls, lf = {}, {}
     for w in reversed(topo):
         a = akt[w]; dur = a['Dur']
@@ -112,9 +131,11 @@ def cpm_hesapla(df_raw, baslangic="2026-01-15"):
                 elif s['type']=="SF": ls_l.append(lf[sw])
             lf[w] = min(lf_l) if lf_l else (min(ls_l)+dur-1 if ls_l else proje_bitis)
         ls[w] = lf[w]-dur+1
+
     base = datetime.strptime(baslangic, "%Y-%m-%d")
     toplam = sum(a['Dur'] for a in akt.values())
     toplam_butce = sum(a['Butce'] for a in akt.values())
+
     rows = []
     for w in topo:
         a = akt[w]; dur = a['Dur']; slack = ls[w]-es[w]; crit = "EVET" if slack==0 else "HAYIR"
@@ -154,26 +175,72 @@ def excel_cikti(df_cpm):
 st.title("🏗️ Ünzüle Hanbaba — İnşaat Proje Yönetimi Paneli")
 st.caption("CPM • EVM • Gantt • Monte Carlo • Nakit Akışı • Excel Yükleme")
 
-# --- YAN MENÜ: DOSYA YÜKLEME ---
 st.sidebar.header("📂 Proje Verisi Yükle")
-
-# Excel Yükleme
 uploaded_excel = st.sidebar.file_uploader("Excel Yükle (WBS, Süre, Bütçe)", type=["xlsx"])
 
 df_veri = varsayilan_veri()
 
 if uploaded_excel is not None:
     try:
+        # Excel'i oku (Sütun isimlerini esnek yap)
         df_yuklenen = pd.read_excel(uploaded_excel, sheet_name="05_IS_PROGRAMI", header=3)
+        
+        # Sütun isimlerini temizle
         df_yuklenen.columns = [str(c).strip() for c in df_yuklenen.columns]
-        gerekli = ["WBS", "İş Kalemi", "Süre (Gün)", "Önceki Aktivite", "Bağımlılık Tipi", "Bütçe (TL)"]
-        if all(k in df_yuklenen.columns for k in gerekli):
-            df_veri = df_yuklenen
-            st.sidebar.success("✅ Excel başarıyla yüklendi!")
+        
+        # Gerekli sütunların varlığını kontrol et (esnek isimlerle)
+        gerekli_kolonlar = [
+            'WBS', 'WBS Kodu', 
+            'İş Kalemi', 'İş Kalemi / İmalat Tanımı',
+            'Süre (Gün)', 'Süre', 
+            'Önceki Aktivite', 'Önceki',
+            'Bağımlılık Tipi', 'Tip',
+            'Bütçe (TL)', 'Bütçe Tutarı', 'Bütçe'
+        ]
+        
+        # Sütunları eşleştir (kullanıcı hangi ismi kullandıysa onu al)
+        df_veri = pd.DataFrame()
+        df_veri['WBS'] = df_yuklenen.iloc[:, 0] # İlk sütun her zaman WBS
+        df_veri['İş Kalemi'] = df_yuklenen.iloc[:, 1] # İkinci sütun her zaman İş Kalemi
+        
+        # Süre, Önceki, Tip ve Bütçe için esnek arama
+        for col in ['Süre (Gün)', 'Süre']:
+            if col in df_yuklenen.columns:
+                df_veri['Süre (Gün)'] = df_yuklenen[col]
+                break
         else:
-            st.sidebar.error("❌ Excel'de eksik sütunlar var. Varsayılan veri kullanılıyor.")
+            df_veri['Süre (Gün)'] = 1 # Bulunamazsa varsayılan 1
+            
+        for col in ['Önceki Aktivite', 'Önceki']:
+            if col in df_yuklenen.columns:
+                df_veri['Önceki Aktivite'] = df_yuklenen[col]
+                break
+        else:
+            df_veri['Önceki Aktivite'] = ""
+            
+        for col in ['Bağımlılık Tipi', 'Tip']:
+            if col in df_yuklenen.columns:
+                df_veri['Bağımlılık Tipi'] = df_yuklenen[col]
+                break
+        else:
+            df_veri['Bağımlılık Tipi'] = "FS"
+            
+        for col in ['Bütçe (TL)', 'Bütçe Tutarı', 'Bütçe']:
+            if col in df_yuklenen.columns:
+                df_veri['Bütçe (TL)'] = df_yuklenen[col]
+                break
+        else:
+            df_veri['Bütçe (TL)'] = 0.0
+
+        # Boş sütunları ekle (sistemin beklediği diğer sütunlar)
+        for col in ["Sorumlu","Plan Başlangıç","Plan Bitiş","Fiili Başlangıç","Fiili Bitiş", "Plan İlerleme %","Fiili İlerleme %","Ağırlık %","Ağırlıklı İlerleme %", "Durum","Gecikme (gün)","Kanıt / Saha Notu"]:
+            df_veri[col] = ""
+            
+        df_veri = df_veri[["WBS","İş Kalemi","Sorumlu","Plan Başlangıç","Plan Bitiş", "Fiili Başlangıç","Fiili Bitiş","Plan İlerleme %","Fiili İlerleme %", "Ağırlık %","Ağırlıklı İlerleme %","Durum","Gecikme (gün)", "Kanıt / Saha Notu","Süre (Gün)","Önceki Aktivite","Bağımlılık Tipi","Bütçe (TL)"]]
+        
+        st.sidebar.success("✅ Excel başarıyla yüklendi!")
     except Exception as e:
-        st.sidebar.error(f"❌ Excel okunamadı: {e}")
+        st.sidebar.error(f"❌ Excel okunamadı: {e}. Varsayılan veri kullanılıyor.")
 
 df_cpm, proje_suresi, toplam_butce = cpm_hesapla(df_veri)
 
@@ -193,9 +260,6 @@ with st.sidebar:
     st.download_button("📊 CPM Excel", excel_cikti(df_cpm), "CPM_Sonuc.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     st.download_button("📋 Giriş Excel", excel_giris_olustur(df_veri), "Villa_Is_Programi.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-# ============================================================
-# MODÜLLER
-# ============================================================
 modul = st.selectbox("Modül Seç", [
     "1. İş Programı Verisi", 
     "2. CPM & Kritik Yol", 
