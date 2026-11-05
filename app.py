@@ -222,9 +222,12 @@ st.caption("CPM • EVM • Gantt • Monte Carlo • Maliyet Kontrolü")
 df_veri = is_programi_verisi_uret()
 df_cpm, proje_suresi, toplam_butce = cpm_hesapla(df_veri)
 
-# --- FAZ 4: SAHA İLERLEME SİMÜLASYONU (SESSION STATE) ---
-if 'ilerleme' not in st.session_state:
-    st.session_state.ilerleme = {row['WBS Kodu']: 0 for _, row in df_cpm.iterrows()}
+# --- FAZ 4: EVM VERİLERİNİ HAZIRLA (Session State Yerine Data Editor Kullanacağız) ---
+if 'evm_df' not in st.session_state:
+    # Tabloda sadece bütçesi olan aktiviteleri gösterelim
+    evm_baslangic = df_cpm[df_cpm["Bütçe (TL)"] > 0][["WBS Kodu", "İş Kalemi", "Bütçe (TL)"]].copy()
+    evm_baslangic["İlerleme %"] = 0
+    st.session_state.evm_df = evm_baslangic
 
 # ============================================================
 # SIDEBAR
@@ -276,54 +279,40 @@ elif modul == "3. Gantt Şeması":
 
 elif modul == "4. Bütçe & Maliyet (EVM)":
     st.subheader("💰 Kazanılmış Değer Yönetimi (EVM) ve Hakediş")
-    st.markdown("Sahadaki ilerlemeyi seçin ve sisteme kaydedin. Sistem anında maliyet performansını hesaplayacaktır.")
-    
-    # Aktivite Seçimi ve İlerleme Girişi (Akıllı Form)
-    with st.form("ilerleme_formu"):
-        col1, col2 = st.columns(2)
-        with col1:
-            secilen_wbs = st.selectbox(
-                "Aktivite Seçin", 
-                df_cpm["WBS Kodu"].tolist(),
-                format_func=lambda x: f"[{x}] {df_cpm[df_cpm['WBS Kodu']==x]['İş Kalemi'].values[0]}"
-            )
-        with col2:
-            yeni_yuzde = st.slider("Mevcut İlerleme (%)", 0, 100, st.session_state.ilerleme.get(secilen_wbs, 0))
-            
-        submit = st.form_submit_button("İlerlemeyi Kaydet")
-        if submit:
-            st.session_state.ilerleme[secilen_wbs] = yeni_yuzde
-            st.success(f"{secilen_wbs} aktivitesi %{yeni_yuzde} olarak kaydedildi.")
-            st.rerun()
+    st.info("💡 Aşağıdaki tabloda **İlerleme %** sütununa tıklayarak sahadaki gerçekleşme yüzdelerini girebilirsiniz. Sistem anında EVM hesaplamalarını güncelleyecektir.")
 
-    # EVM Hesaplamaları
+    # Akıllı Veri Düzenleyici (Data Editor)
+    edited_df = st.data_editor(
+        st.session_state.evm_df,
+        column_config={
+            "WBS Kodu": st.column_config.TextColumn("WBS", disabled=True),
+            "İş Kalemi": st.column_config.TextColumn("İş Kalemi", disabled=True, width="large"),
+            "Bütçe (TL)": st.column_config.NumberColumn("Bütçe (TL)", format="%,.0f", disabled=True),
+            "İlerleme %": st.column_config.NumberColumn("İlerleme %", min_value=0, max_value=100, step=5, format="%d %%")
+        },
+        hide_index=True,
+        use_container_width=True,
+        key="evm_editor"
+    )
+
+    # Değişiklikleri Session State'e kaydet
+    st.session_state.evm_df = edited_df
+
+    # EVM Hesaplamaları (Anlık)
     st.markdown("---")
     st.markdown("### Maliyet Performansı (EVM)")
     
     toplam_pv = 0
     toplam_ev = 0
     toplam_ac = 0
-    evm_rows = []
 
-    for _, row in df_cpm.iterrows():
-        wbs = row["WBS Kodu"]
+    for _, row in edited_df.iterrows():
         butce = row["Bütçe (TL)"]
-        ilerleme = st.session_state.ilerleme.get(wbs, 0) / 100.0
+        ilerleme = row["İlerleme %"] / 100.0
         
-        pv = butce 
-        ev = butce * ilerleme 
-        ac = ev * 1.10 # Simülasyon: %10 fazla harcama
-
-        toplam_pv += pv
-        toplam_ev += ev
-        toplam_ac += ac
-        
-        if butce > 0:
-            evm_rows.append({
-                "WBS": wbs, "İş Kalemi": row["İş Kalemi"], 
-                "Bütçe (BAC)": butce, "İlerleme %": st.session_state.ilerleme.get(wbs, 0),
-                "Kazanılmış (EV)": ev, "Gerçekleşen (AC)": ac
-            })
+        toplam_pv += butce 
+        toplam_ev += butce * ilerleme 
+        toplam_ac += (butce * ilerleme) * 1.10 # Simülasyon: %10 fazla harcama
 
     cpi = toplam_ev / toplam_ac if toplam_ac > 0 else 1.0
     spi = toplam_ev / toplam_pv if toplam_pv > 0 else 1.0
@@ -334,9 +323,6 @@ elif modul == "4. Bütçe & Maliyet (EVM)":
     k2.metric("Gerçekleşen Maliyet (AC)", f"{toplam_ac:,.0f} TL")
     k3.metric("Maliyet Performansı (CPI)", f"{cpi:.2f}", delta=f"{cpi-1:.2f}", delta_color="inverse")
     k4.metric("Tahmini Tamamlanma (EAC)", f"{eac:,.0f} TL")
-
-    st.markdown("### EVM Detay Tablosu")
-    st.dataframe(pd.DataFrame(evm_rows), use_container_width=True)
 
 elif modul == "5. Monte Carlo Simülasyonu":
     st.subheader("🎲 Süre Risk Analizi")
