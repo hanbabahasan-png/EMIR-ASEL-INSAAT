@@ -10,6 +10,7 @@ import io
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
+from sqlalchemy import text
 
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
@@ -21,7 +22,54 @@ plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
 st.set_page_config(page_title="Ünzüle Hanbaba — İnşaat Proje Yönetimi", page_icon="🏗️", layout="wide")
 
 # ============================================================
-# VERİ ÜRETİCİ (Varsayılan 30 Aktiviteli Veri)
+# VERİTABANI BAĞLANTISI (NEON POSTGRESQL)
+# ============================================================
+try:
+    conn = st.connection("neon", type="sql")
+except Exception as e:
+    st.error(f"Veritabanı bağlantısı kurulamadı. Lütfen Streamlit Secrets ayarlarını kontrol edin. Hata: {e}")
+    st.stop()
+
+def init_db():
+    """Veritabanı tablosunu oluşturur."""
+    try:
+        with conn.session as s:
+            s.execute(text("""
+                CREATE TABLE IF NOT EXISTS ilerleme (
+                    wbs_kodu TEXT PRIMARY KEY,
+                    ilerleme_yuzdesi INTEGER DEFAULT 0
+                )
+            """))
+            s.commit()
+    except Exception as e:
+        st.warning(f"Veritabanı tablosu oluşturulamadı: {e}")
+
+def ilerleme_kaydet(wbs, yuzde):
+    """İlerlemeyi veritabanına kaydeder veya günceller."""
+    try:
+        with conn.session as s:
+            s.execute(text("""
+                INSERT INTO ilerleme (wbs_kodu, ilerleme_yuzdesi) 
+                VALUES (:wbs, :yuzde)
+                ON CONFLICT(wbs_kodu) DO UPDATE SET ilerleme_yuzdesi = :yuzde
+            """), {"wbs": wbs, "yuzde": yuzde})
+            s.commit()
+    except Exception as e:
+        st.error(f"Kayıt hatası: {e}")
+
+def ilerleme_yukle():
+    """Veritabanından tüm ilerlemeleri okur."""
+    try:
+        df = conn.query("SELECT wbs_kodu, ilerleme_yuzdesi FROM ilerleme", ttl=0)
+        return dict(zip(df['wbs_kodu'], df['ilerleme_yuzdesi']))
+    except Exception:
+        return {}
+
+# Başlangıçta tabloyu oluştur
+init_db()
+
+# ============================================================
+# VARSAYILAN VERİ
 # ============================================================
 @st.cache_data
 def varsayilan_veri():
@@ -56,31 +104,22 @@ def varsayilan_veri():
 def cpm_hesapla(df_raw, baslangic="2026-01-15"):
     akt = {}
     for _, row in df_raw.iterrows():
-        # Sütun isimlerini normalize et (Büyük/küçük harf ve boşluk duyarsız)
         row_dict = {str(k).strip().lower(): v for k, v in row.items()}
-        
         wbs = str(row_dict.get('wbs kodu', row_dict.get('wbs', ''))).strip()
         if not wbs or wbs.lower() in ('nan','none',''): continue
-        
         task = str(row_dict.get('i̇ş kalemi', row_dict.get('iş kalemi', row_dict.get('i̇ş kalemi / i̇malat tanımı', 'İsimsiz'))))
-        
         try:
             dur = int(float(row_dict.get('süre (gün)', row_dict.get('süre', 1))))
             if dur <= 0: dur = 1
         except: dur = 1
-        
         preds_raw = str(row_dict.get('önceki aktivite', row_dict.get('önceki', '')))
         preds = [p.strip() for p in preds_raw.split(',') if p.strip() and p.strip().lower() != 'nan']
-        
         dtype = str(row_dict.get('bağımlılık tipi', row_dict.get('tip', 'FS'))).upper()
         if dtype not in ["FS","SS","FF","SF"]: dtype = "FS"
-        
-        # Bütçe: "Bütçe (TL)" veya "Bütçe Tutarı" sütununu ara
         butce_val = row_dict.get('bütçe (tl)', row_dict.get('bütçe tutarı', row_dict.get('bütçe', 0)))
         try:
             butce = float(butce_val) if pd.notna(butce_val) else 0.0
         except: butce = 0.0
-
         akt[wbs] = {'WBS':wbs,'Task':task,'Dur':dur, 'Preds':preds,'Type':dtype,'Succ':[], 'Butce': butce}
 
     wbs_set = set(akt.keys())
@@ -143,17 +182,8 @@ def cpm_hesapla(df_raw, baslangic="2026-01-15"):
     return pd.DataFrame(rows), proje_bitis, toplam_butce
 
 # ============================================================
-# EXCEL & PDF FONKSİYONLARI
+# YARDIMCI FONKSİYONLAR (PDF, EXCEL)
 # ============================================================
-def excel_giris_olustur(df):
-    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "05_IS_PROGRAMI"
-    for j, col in enumerate(df.columns, start=1):
-        c = ws.cell(row=4, column=j, value=col); c.font = Font(bold=True, color="FFFFFF"); c.fill = PatternFill("solid", fgColor="1976D2"); c.alignment = Alignment(horizontal="center")
-    for i, row in df.iterrows():
-        for j, val in enumerate(row, start=1): ws.cell(row=5+i, column=j, value=val)
-    for j in range(1, len(df.columns)+1): ws.column_dimensions[get_column_letter(j)].width = 18
-    buf = io.BytesIO(); wb.save(buf); buf.seek(0); return buf.getvalue()
-
 def pdf_rapor(df_cpm, proje_suresi):
     buf = io.BytesIO(); doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=25, leftMargin=25, topMargin=25, bottomMargin=25)
     el = []; styles = getSampleStyleSheet(); title = ParagraphStyle('T', parent=styles['Heading1'], fontSize=14, textColor=colors.HexColor("#1976D2"), spaceAfter=8, alignment=1)
@@ -173,7 +203,7 @@ def excel_cikti(df_cpm):
 # ANA UYGULAMA
 # ============================================================
 st.title("🏗️ Ünzüle Hanbaba — İnşaat Proje Yönetimi Paneli")
-st.caption("CPM • EVM • Gantt • Monte Carlo • Nakit Akışı • Excel Yükleme")
+st.caption("CPM • EVM • Gantt • Monte Carlo • Nakit Akışı • Neon SQL Veritabanı")
 
 st.sidebar.header("📂 Proje Verisi Yükle")
 uploaded_excel = st.sidebar.file_uploader("Excel Yükle (WBS, Süre, Bütçe)", type=["xlsx"])
@@ -182,72 +212,37 @@ df_veri = varsayilan_veri()
 
 if uploaded_excel is not None:
     try:
-        # Excel'i oku (Sütun isimlerini esnek yap)
         df_yuklenen = pd.read_excel(uploaded_excel, sheet_name="05_IS_PROGRAMI", header=3)
-        
-        # Sütun isimlerini temizle
         df_yuklenen.columns = [str(c).strip() for c in df_yuklenen.columns]
-        
-        # Gerekli sütunların varlığını kontrol et (esnek isimlerle)
-        gerekli_kolonlar = [
-            'WBS', 'WBS Kodu', 
-            'İş Kalemi', 'İş Kalemi / İmalat Tanımı',
-            'Süre (Gün)', 'Süre', 
-            'Önceki Aktivite', 'Önceki',
-            'Bağımlılık Tipi', 'Tip',
-            'Bütçe (TL)', 'Bütçe Tutarı', 'Bütçe'
-        ]
-        
-        # Sütunları eşleştir (kullanıcı hangi ismi kullandıysa onu al)
         df_veri = pd.DataFrame()
-        df_veri['WBS'] = df_yuklenen.iloc[:, 0] # İlk sütun her zaman WBS
-        df_veri['İş Kalemi'] = df_yuklenen.iloc[:, 1] # İkinci sütun her zaman İş Kalemi
-        
-        # Süre, Önceki, Tip ve Bütçe için esnek arama
+        df_veri['WBS'] = df_yuklenen.iloc[:, 0]
+        df_veri['İş Kalemi'] = df_yuklenen.iloc[:, 1]
         for col in ['Süre (Gün)', 'Süre']:
-            if col in df_yuklenen.columns:
-                df_veri['Süre (Gün)'] = df_yuklenen[col]
-                break
-        else:
-            df_veri['Süre (Gün)'] = 1 # Bulunamazsa varsayılan 1
-            
+            if col in df_yuklenen.columns: df_veri['Süre (Gün)'] = df_yuklenen[col]; break
+        else: df_veri['Süre (Gün)'] = 1
         for col in ['Önceki Aktivite', 'Önceki']:
-            if col in df_yuklenen.columns:
-                df_veri['Önceki Aktivite'] = df_yuklenen[col]
-                break
-        else:
-            df_veri['Önceki Aktivite'] = ""
-            
+            if col in df_yuklenen.columns: df_veri['Önceki Aktivite'] = df_yuklenen[col]; break
+        else: df_veri['Önceki Aktivite'] = ""
         for col in ['Bağımlılık Tipi', 'Tip']:
-            if col in df_yuklenen.columns:
-                df_veri['Bağımlılık Tipi'] = df_yuklenen[col]
-                break
-        else:
-            df_veri['Bağımlılık Tipi'] = "FS"
-            
+            if col in df_yuklenen.columns: df_veri['Bağımlılık Tipi'] = df_yuklenen[col]; break
+        else: df_veri['Bağımlılık Tipi'] = "FS"
         for col in ['Bütçe (TL)', 'Bütçe Tutarı', 'Bütçe']:
-            if col in df_yuklenen.columns:
-                df_veri['Bütçe (TL)'] = df_yuklenen[col]
-                break
-        else:
-            df_veri['Bütçe (TL)'] = 0.0
-
-        # Boş sütunları ekle (sistemin beklediği diğer sütunlar)
+            if col in df_yuklenen.columns: df_veri['Bütçe (TL)'] = df_yuklenen[col]; break
+        else: df_veri['Bütçe (TL)'] = 0.0
         for col in ["Sorumlu","Plan Başlangıç","Plan Bitiş","Fiili Başlangıç","Fiili Bitiş", "Plan İlerleme %","Fiili İlerleme %","Ağırlık %","Ağırlıklı İlerleme %", "Durum","Gecikme (gün)","Kanıt / Saha Notu"]:
             df_veri[col] = ""
-            
         df_veri = df_veri[["WBS","İş Kalemi","Sorumlu","Plan Başlangıç","Plan Bitiş", "Fiili Başlangıç","Fiili Bitiş","Plan İlerleme %","Fiili İlerleme %", "Ağırlık %","Ağırlıklı İlerleme %","Durum","Gecikme (gün)", "Kanıt / Saha Notu","Süre (Gün)","Önceki Aktivite","Bağımlılık Tipi","Bütçe (TL)"]]
-        
         st.sidebar.success("✅ Excel başarıyla yüklendi!")
     except Exception as e:
-        st.sidebar.error(f"❌ Excel okunamadı: {e}. Varsayılan veri kullanılıyor.")
+        st.sidebar.error(f"❌ Excel okunamadı: {e}")
 
 df_cpm, proje_suresi, toplam_butce = cpm_hesapla(df_veri)
 
-if 'evm_df' not in st.session_state:
-    evm_baslangic = df_cpm[df_cpm["Bütçe (TL)"] > 0][["WBS Kodu", "İş Kalemi", "Bütçe (TL)"]].copy()
-    evm_baslangic["İlerleme %"] = 0
-    st.session_state.evm_df = evm_baslangic
+# EVM İlerlemelerini Veritabanından Yükle
+kayitli_ilerleme = ilerleme_yukle()
+evm_baslangic = df_cpm[df_cpm["Bütçe (TL)"] > 0][["WBS Kodu", "İş Kalemi", "Bütçe (TL)"]].copy()
+evm_baslangic["İlerleme %"] = evm_baslangic["WBS Kodu"].map(kayitli_ilerleme).fillna(0).astype(int)
+st.session_state.evm_df = evm_baslangic
 
 with st.sidebar:
     st.header("📊 Proje Özeti")
@@ -258,23 +253,16 @@ with st.sidebar:
     st.subheader("📥 İndir")
     st.download_button("📄 PDF Rapor", pdf_rapor(df_cpm, proje_suresi), "CPM_Rapor.pdf", "application/pdf")
     st.download_button("📊 CPM Excel", excel_cikti(df_cpm), "CPM_Sonuc.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    st.download_button("📋 Giriş Excel", excel_giris_olustur(df_veri), "Villa_Is_Programi.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 modul = st.selectbox("Modül Seç", [
-    "1. İş Programı Verisi", 
-    "2. CPM & Kritik Yol", 
-    "3. Gantt Şeması", 
-    "4. Bütçe & Maliyet (EVM)", 
-    "5. Monte Carlo Simülasyonu",
-    "6. Nakit Akışı (S-Eğrisi)"
+    "1. İş Programı Verisi", "2. CPM & Kritik Yol", "3. Gantt Şeması", 
+    "4. Bütçe & Maliyet (EVM)", "5. Monte Carlo Simülasyonu", "6. Nakit Akışı (S-Eğrisi)"
 ])
 
 if modul == "1. İş Programı Verisi": 
     st.subheader("📋 İş Programı ve Bütçe"); st.dataframe(df_veri, use_container_width=True)
-
 elif modul == "2. CPM & Kritik Yol": 
     st.subheader("⏱️ CPM Sonuçları"); st.dataframe(df_cpm, use_container_width=True)
-
 elif modul == "3. Gantt Şeması":
     st.subheader("📊 Gantt & Kritik Yol")
     df = df_cpm.iloc[::-1].reset_index(drop=True); fig, ax = plt.subplots(figsize=(12, max(6, len(df)*0.4)))
@@ -284,20 +272,34 @@ elif modul == "3. Gantt Şeması":
         ax.text(r["ES"]+r["Süre (Gün)"]/2, i, f"{r['Süre (Gün)']}g", ha='center', va='center', color='white', fontsize=7, fontweight='bold')
     ax.set_yticks(range(len(df))); ax.set_yticklabels([f"[{r['WBS Kodu']}] {r['İş Kalemi'][:28]}" for _,r in df.iterrows()], fontsize=8)
     ax.set_xlabel("Proje Günü"); ax.grid(axis='x', linestyle=':', alpha=0.6); st.pyplot(fig); plt.close(fig)
-
 elif modul == "4. Bütçe & Maliyet (EVM)":
     st.subheader("💰 Kazanılmış Değer Yönetimi (EVM) ve Hakediş")
-    st.info("💡 Tablodaki **İlerleme %** sütununa tıklayarak sahadaki gerçekleşme yüzdelerini girin. Sistem anında EVM hesaplamalarını günceller.")
-    edited_df = st.data_editor(st.session_state.evm_df, column_config={"WBS Kodu": st.column_config.TextColumn("WBS", disabled=True), "İş Kalemi": st.column_config.TextColumn("İş Kalemi", disabled=True, width="large"), "Bütçe (TL)": st.column_config.NumberColumn("Bütçe (TL)", format="%,.0f", disabled=True), "İlerleme %": st.column_config.NumberColumn("İlerleme %", min_value=0, max_value=100, step=5, format="%d %%")}, hide_index=True, use_container_width=True, key="evm_editor")
-    st.session_state.evm_df = edited_df; st.markdown("---"); st.markdown("### Maliyet Performansı (EVM)")
+    st.info("💡 İlerleme yüzdelerini değiştirdiğinizde sistem otomatik olarak **Neon SQL veritabanına kaydeder**. Sayfayı yenileseniz veya uygulama yeniden başlasa bile verileriniz korunur.")
+    
+    edited_df = st.data_editor(st.session_state.evm_df, column_config={
+        "WBS Kodu": st.column_config.TextColumn("WBS", disabled=True),
+        "İş Kalemi": st.column_config.TextColumn("İş Kalemi", disabled=True, width="large"),
+        "Bütçe (TL)": st.column_config.NumberColumn("Bütçe (TL)", format="%,.0f", disabled=True),
+        "İlerleme %": st.column_config.NumberColumn("İlerleme %", min_value=0, max_value=100, step=5, format="%d %%")
+    }, hide_index=True, use_container_width=True, key="evm_editor")
+    
+    # Veritabanına kaydet (değişiklikleri algıla)
+    for _, row in edited_df.iterrows():
+        ilerleme_kaydet(row["WBS Kodu"], row["İlerleme %"])
+    
+    st.session_state.evm_df = edited_df
+    st.markdown("---")
+    st.markdown("### Maliyet Performansı (EVM)")
     toplam_pv, toplam_ev, toplam_ac = 0, 0, 0
     for _, row in edited_df.iterrows():
         butce = row["Bütçe (TL)"]; ilerleme = row["İlerleme %"] / 100.0
         toplam_pv += butce; toplam_ev += butce * ilerleme; toplam_ac += (butce * ilerleme) * 1.10
     cpi = toplam_ev / toplam_ac if toplam_ac > 0 else 1.0; spi = toplam_ev / toplam_pv if toplam_pv > 0 else 1.0; eac = toplam_butce / cpi if cpi > 0 else toplam_butce
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Kazanılmış Değer (EV)", f"{toplam_ev:,.0f} TL"); k2.metric("Gerçekleşen Maliyet (AC)", f"{toplam_ac:,.0f} TL"); k3.metric("Maliyet Performansı (CPI)", f"{cpi:.2f}", delta=f"{cpi-1:.2f}", delta_color="inverse"); k4.metric("Tahmini Tamamlanma (EAC)", f"{eac:,.0f} TL")
-
+    k1.metric("Kazanılmış Değer (EV)", f"{toplam_ev:,.0f} TL")
+    k2.metric("Gerçekleşen Maliyet (AC)", f"{toplam_ac:,.0f} TL")
+    k3.metric("Maliyet Performansı (CPI)", f"{cpi:.2f}", delta=f"{cpi-1:.2f}", delta_color="inverse")
+    k4.metric("Tahmini Tamamlanma (EAC)", f"{eac:,.0f} TL")
 elif modul == "5. Monte Carlo Simülasyonu":
     st.subheader("🎲 Süre Risk Analizi"); n = st.slider("İterasyon", 100, 2000, 500, 100)
     if st.button("Çalıştır"):
@@ -307,46 +309,28 @@ elif modul == "5. Monte Carlo Simülasyonu":
         fig, ax = plt.subplots(figsize=(10,4)); ax.hist(s, bins=35, color="#1976D2", edgecolor="black", alpha=0.75, density=True)
         for v,c,l in [(p50,'#388E3C','P50'),(p80,'#F57C00','P80'),(p90,'#D32F2F','P90')]: ax.axvline(v, color=c, ls='--', lw=2, label=f"{l} ({v:.0f}g)")
         ax.set_xlabel("Gün"); ax.legend(); st.pyplot(fig); plt.close(fig)
-
 elif modul == "6. Nakit Akışı (S-Eğrisi)":
     st.subheader("📈 Aylık Nakit Akışı (Cash Flow)")
-    st.markdown("Bu modül, iş programındaki bütçeleri ve süreleri kullanarak projenin hangi ayında ne kadar harcama yapılacağını tahmin eder.")
-    
     aylik_harcama = {}
     for _, row in df_cpm.iterrows():
         if row["Bütçe (TL)"] > 0:
-            sure_ay = row["Süre (Gün)"] / 30.0
-            if sure_ay < 1: sure_ay = 1 
+            sure_ay = max(1, row["Süre (Gün)"] / 30.0)
             aylik_maliyet = row["Bütçe (TL)"] / sure_ay
-            
             baslangic_ayi = (row["ES"] - 1) // 30 + 1
             bitis_ayi = (row["EF"] - 1) // 30 + 1
-            
             for ay in range(baslangic_ayi, bitis_ayi + 1):
-                if ay not in aylik_harcama:
-                    aylik_harcama[ay] = 0
-                aylik_harcama[ay] += aylik_maliyet
-    
+                aylik_harcama[ay] = aylik_harcama.get(ay, 0) + aylik_maliyet
     if aylik_harcama:
         df_nakit = pd.DataFrame(list(aylik_harcama.items()), columns=["Ay", "Aylık Harcama (TL)"]).sort_values("Ay")
         df_nakit["Kümülatif Harcama (TL)"] = df_nakit["Aylık Harcama (TL)"].cumsum()
-        
         fig, ax1 = plt.subplots(figsize=(12, 6))
-        
         ax1.bar(df_nakit["Ay"], df_nakit["Aylık Harcama (TL)"], color="#1976D2", alpha=0.6, label="Aylık Harcama")
-        ax1.set_xlabel("Proje Ayı")
-        ax1.set_ylabel("Aylık Harcama (TL)", color="#1976D2")
-        ax1.tick_params(axis='y', labelcolor="#1976D2")
-        
+        ax1.set_xlabel("Proje Ayı"); ax1.set_ylabel("Aylık Harcama (TL)", color="#1976D2")
         ax2 = ax1.twinx()
-        ax2.plot(df_nakit["Ay"], df_nakit["Kümülatif Harcama (TL)"], color="#D32F2F", linewidth=3, marker='o', label="Kümülatif Harcama")
+        ax2.plot(df_nakit["Ay"], df_nakit["Kümülatif Harcama (TL)"], color="#D32F2F", linewidth=3, marker='o', label="Kümülatif")
         ax2.set_ylabel("Kümülatif Harcama (TL)", color="#D32F2F")
-        ax2.tick_params(axis='y', labelcolor="#D32F2F")
-        
         plt.title("Proje Nakit Akışı (S-Eğrisi)", fontsize=14, fontweight='bold')
-        fig.tight_layout()
-        st.pyplot(fig); plt.close(fig)
-        
+        fig.tight_layout(); st.pyplot(fig); plt.close(fig)
         st.dataframe(df_nakit, use_container_width=True)
     else:
         st.warning("Nakit akışı hesaplamak için bütçesi olan aktivite bulunamadı.")
