@@ -1,11 +1,12 @@
 streamlit
 pandas
 numpy
-matplotlib
-openpyxl
-reportlab
-pdfplumber
 sqlalchemy
 psycopg2-binary
-psycopg[binary]
+openpyxl
+plotly
+networkx
+reportlab
+pillow
 streamlit-option-menu
+matplotlib
