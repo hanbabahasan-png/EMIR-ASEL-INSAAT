@@ -12,3 +12,10 @@ numpy
 plotly
 openpyxl
 reportlab
+streamlit
+pandas
+numpy
+plotly
+openpyxl
+reportlab
+acikpoz
