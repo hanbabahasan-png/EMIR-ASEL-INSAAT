@@ -28,3 +28,12 @@ reportlab
 acikpoz
 psycopg2-binary
 sqlalchemy
+streamlit
+pandas
+numpy
+plotly
+openpyxl
+reportlab
+acikpoz
+psycopg2-binary
+sqlalchemy
