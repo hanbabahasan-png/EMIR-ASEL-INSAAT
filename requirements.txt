@@ -19,3 +19,12 @@ plotly
 openpyxl
 reportlab
 acikpoz
+streamlit
+pandas
+numpy
+plotly
+openpyxl
+reportlab
+acikpoz
+psycopg2-binary
+sqlalchemy
