@@ -1,27 +1,44 @@
 # -*- coding: utf-8 -*-
 """
-EMİR ASEL İNŞAAT | PROJE KONTROL V8.3 (EXCEL V5 TAM UYUMLU)
+EMİR ASEL İNŞAAT | PROJE KONTROL V8.4
 - Excel V5 dosyasındaki 18 sayfayı otomatik tanır.
-- Formülleri (Miktar * Fiyat) Python tarafında hesaplar.
+- Logo desteği (Sidebar ve PDF) eklendi.
+- Formüller (Miktar * Fiyat) Python tarafında hesaplanır.
 - V5 Ana Kategorileri (KABA İŞLER, İNCE İŞLER / MEP vb.) sisteme entegre edildi.
-- CPM, EVM ve S-Curve hesaplamaları eksiksizdir.
 Çalıştırma: streamlit run app.py
 """
 from __future__ import annotations
 from io import BytesIO
 from datetime import date, datetime
-import re, json
+import re, json, os
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from openpyxl.styles import Font, PatternFill, Alignment
 
-APP_VERSION = "8.3"
+# PDF ve Excel kütüphaneleri
+try:
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    EXCEL_OK = True
+except ImportError:
+    EXCEL_OK = False
+
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib import colors as rl_colors
+    from reportlab.lib.units import cm
+    PDF_OK = True
+except ImportError:
+    PDF_OK = False
+
+APP_VERSION = "8.4"
 
 st.set_page_config(
-    page_title="Emir Asel | Proje Kontrol V8.3",
+    page_title="Emir Asel | Proje Kontrol V8.4",
     page_icon="🏗️", layout="wide", initial_sidebar_state="expanded",
 )
 
@@ -31,7 +48,6 @@ st.set_page_config(
 NAVY = "#14263D"; NAVY_2 = "#0A192F"
 RED = "#C83E4D"; RED_ACCENT = "#E63946"
 TEAL = "#278C82"; GOLD = "#D6A84B"
-PALETTE = [NAVY, RED, TEAL, GOLD, "#6487A5", "#8D79A8", "#7D9B75"]
 
 st.markdown(f"""
 <style>
@@ -279,7 +295,7 @@ def demo_data():
     return plan, actual, schedule, risk, cash
 
 # ============================================================
-# OTURUM VE SIDEBAR
+# OTURUM VE SIDEBAR (LOGO EKLENDİ)
 # ============================================================
 if "plan" not in st.session_state:
     p, a, s, r, c = demo_data()
@@ -296,6 +312,13 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 with st.sidebar:
+    # 1. LOGO GÖSTERİMİ
+    # GitHub'da 'logo.png' adında bir dosya olmalıdır.
+    try:
+        st.image("logo.png", use_column_width=True)
+    except Exception:
+        st.markdown("### 🏗️ EMİR ASEL")
+        
     st.markdown("## 🏗️ EMİR ASEL")
     MENU = ["Yönetici Dashboard","Proje Künyesi (Excel Yükle)","Bütçe ve Metraj","Gerçekleşen Maliyet",
             "İş Programı / CPM","EVM Performans","Risk Yönetimi","Nakit Akışı (S-Curve)","Raporlar"]
@@ -322,7 +345,7 @@ progress = weighted_progress(schedule)
 
 # EVM Hesaplamaları
 ev = budget * (progress / 100) if budget > 0 else 0
-pv = budget * 0.5 # Örnek planlanan değer
+pv = budget * 0.5
 cpi = ev / actual_cost if actual_cost > 0 else 0
 spi = ev / pv if pv > 0 else 0
 eac = budget / cpi if cpi > 0 else 0
@@ -362,7 +385,6 @@ elif page == "Proje Künyesi (Excel Yükle)":
             raw_sheets = read_uploaded_excel(uploaded)
             st.success(f"Dosya başarıyla okundu. Bulunan Sayfalar: {list(raw_sheets.keys())}")
             
-            # Sayfaları içeriğe göre bul
             plan_df, actual_df, sched_df, risk_df, cash_df = None, None, None, None, None
             for name, df in raw_sheets.items():
                 cols = [str(c).lower() for c in df.columns]
@@ -378,16 +400,11 @@ elif page == "Proje Künyesi (Excel Yükle)":
                     cash_df = df
             
             if st.button("Verileri Sisteme Aktar", type="primary"):
-                if plan_df is not None:
-                    st.session_state.plan = map_imported_sheet(plan_df, "plan")
-                if actual_df is not None:
-                    st.session_state.actual = map_imported_sheet(actual_df, "actual")
-                if sched_df is not None:
-                    st.session_state.schedule = map_imported_sheet(sched_df, "schedule")
-                if risk_df is not None:
-                    st.session_state.risk = map_imported_sheet(risk_df, "risk")
-                if cash_df is not None:
-                    st.session_state.cash = map_imported_sheet(cash_df, "cash")
+                if plan_df is not None: st.session_state.plan = map_imported_sheet(plan_df, "plan")
+                if actual_df is not None: st.session_state.actual = map_imported_sheet(actual_df, "actual")
+                if sched_df is not None: st.session_state.schedule = map_imported_sheet(sched_df, "schedule")
+                if risk_df is not None: st.session_state.risk = map_imported_sheet(risk_df, "risk")
+                if cash_df is not None: st.session_state.cash = map_imported_sheet(cash_df, "cash")
                 
                 st.success("Tüm veriler başarıyla sisteme aktarıldı! Diğer sekmelerden kontrol edebilirsiniz.")
                 st.rerun()
@@ -427,7 +444,6 @@ elif page == "İş Programı / CPM":
     
     if not schedule.empty:
         st.markdown('<div class="section-title">📅 Gantt Şeması</div>', unsafe_allow_html=True)
-        # Tarihleri string'den date'e çevir
         df_gantt = schedule.copy()
         df_gantt["Başlangıç"] = pd.to_datetime(df_gantt["Başlangıç"], errors="coerce")
         df_gantt["Bitiş"] = pd.to_datetime(df_gantt["Bitiş"], errors="coerce")
@@ -449,7 +465,6 @@ elif page == "EVM Performans":
     st.metric("CPI (Maliyet Verimliliği)", f"{cpi:.2f}")
     st.metric("SPI (Zaman Verimliliği)", f"{spi:.2f}")
     
-    # EVM Bar Chart
     fig = go.Figure(data=[
         go.Bar(name='BAC', x=['Bütçe'], y=[budget], marker_color=NAVY),
         go.Bar(name='EV', x=['Kazanılan'], y=[ev], marker_color=TEAL),
@@ -487,7 +502,6 @@ elif page == "Nakit Akışı (S-Curve)":
     
     if not cash.empty:
         st.markdown('<div class="section-title">📈 S-Curve Grafiği</div>', unsafe_allow_html=True)
-        # Kümülatif hesapla
         cash["Kümülatif Bakiye"] = pd.to_numeric(cash["Gerçekleşen Tahsilat"], errors="coerce").fillna(0).cumsum()
         
         fig = go.Figure()
@@ -512,21 +526,58 @@ elif page == "Raporlar":
     st.title("Raporlar ve Dışa Aktarım")
     st.write("Aşağıdaki butonu kullanarak tüm proje verilerini içeren Excel dosyasını indirebilirsiniz.")
     
-    # Excel oluştur
-    from io import BytesIO
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        plan.to_excel(writer, sheet_name="Bütçe ve Metraj", index=False)
-        actual.to_excel(writer, sheet_name="Gerçekleşen Maliyet", index=False)
-        schedule.to_excel(writer, sheet_name="İş Programı", index=False)
-        risk.to_excel(writer, sheet_name="Riskler", index=False)
-        cash.to_excel(writer, sheet_name="Nakit Akışı", index=False)
-    
-    st.download_button(
-        label="📥 Excel Raporunu İndir",
-        data=output.getvalue(),
-        file_name=f"EmirAsel_Rapor_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    if EXCEL_OK:
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            plan.to_excel(writer, sheet_name="Bütçe ve Metraj", index=False)
+            actual.to_excel(writer, sheet_name="Gerçekleşen Maliyet", index=False)
+            schedule.to_excel(writer, sheet_name="İş Programı", index=False)
+            risk.to_excel(writer, sheet_name="Riskler", index=False)
+            cash.to_excel(writer, sheet_name="Nakit Akışı", index=False)
+        
+        st.download_button(
+            label="📥 Excel Raporunu İndir",
+            data=output.getvalue(),
+            file_name=f"EmirAsel_Rapor_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        st.warning("Excel raporu için 'openpyxl' kütüphanesi eksik.")
+
+    # Logo Destekli PDF Raporu
+    if PDF_OK and os.path.exists("logo.png"):
+        if st.button("📄 PDF Raporu Oluştur (Logolu)"):
+            buf = BytesIO()
+            doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=2*cm, bottomMargin=2*cm)
+            story = []
+            styles = getSampleStyleSheet()
+            
+            # Logoyu PDF'e Ekle
+            try:
+                img = RLImage("logo.png", width=5*cm, height=3*cm)
+                story.append(img)
+            except:
+                pass
+                
+            story.append(Paragraph("<b>EMİR ASEL İNŞAAT PROJE RAPORU</b>", styles['Title']))
+            story.append(Spacer(1, 1*cm))
+            story.append(Paragraph(f"<b>Proje:</b> {project_name}", styles['Normal']))
+            story.append(Paragraph(f"<b>Tarih:</b> {datetime.now().strftime('%d.%m.%Y')}", styles['Normal']))
+            story.append(Spacer(1, 0.5*cm))
+            
+            story.append(Paragraph(f"<b>Toplam Bütçe (BAC):</b> {money(budget)}", styles['Normal']))
+            story.append(Paragraph(f"<b>Gerçekleşen Maliyet (AC):</b> {money(actual_cost)}", styles['Normal']))
+            story.append(Paragraph(f"<b>Fiziksel İlerleme:</b> {pct(progress)}", styles['Normal']))
+            story.append(Paragraph(f"<b>CPI:</b> {cpi:.2f}", styles['Normal']))
+            story.append(Paragraph(f"<b>SPI:</b> {spi:.2f}", styles['Normal']))
+            
+            doc.build(story)
+            buf.seek(0)
+            st.download_button(
+                label="📥 PDF Raporunu İndir",
+                data=buf.getvalue(),
+                file_name=f"EmirAsel_Rapor_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+                mime="application/pdf"
+            )
 
 st.markdown(f'<div class="ea-footer"><strong>EMİR ASEL İNŞAAT</strong> · Proje Kontrol V{APP_VERSION}</div>', unsafe_allow_html=True)
