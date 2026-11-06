@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-EMİR ASEL İNŞAAT | PROJE KONTROL V9.4 (KESİN ÇÖZÜM)
-- Veriler Neon PostgreSQL'e (veya yoksa SQLite'a) kalıcı olarak kaydedilir.
-- Kaydet butonuna basıldığında hafıza sıfırlanır ve veri sıfırdan DB'den okunur.
-- Sayfa yenilense bile (F5) veriler asla kaybolmaz.
+EMİR ASEL İNŞAAT | PROJE KONTROL V9.5 (NİHAİ SÜRÜM)
+- Neon PostgreSQL'e zorunlu bağlantı.
+- "..." sorunu giderildi, hatalar ekrana basılıyor.
 """
 from __future__ import annotations
 from io import BytesIO
@@ -15,23 +14,15 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import text
 
-# Opsiyonel Kütüphaneler
 try:
     from acikpoz import parse_catalog
     ACIKPOZ_OK = True
 except ImportError:
     ACIKPOZ_OK = False
 
-try:
-    import plotly.express as px
-    import plotly.graph_objects as go
-    PLOTLY_OK = True
-except ImportError:
-    PLOTLY_OK = False
+APP_VERSION = "9.5"
 
-APP_VERSION = "9.4"
-
-st.set_page_config(page_title="Emir Asel | Proje Kontrol V9.4", page_icon="🏗️", layout="wide")
+st.set_page_config(page_title="Emir Asel | Proje Kontrol V9.5", page_icon="🏗️", layout="wide")
 
 # ============================================================
 # TEMA
@@ -52,6 +43,7 @@ st.markdown(f"""
     .section-title {{ color: {NAVY}; font-size: 18px; font-weight: 800; margin: 22px 0 10px 0; padding-left: 12px; border-left: 4px solid {RED_ACCENT}; }}
     .save-box {{ background: #E8F5E9; border-left: 5px solid #4CAF50; padding: 12px 16px; border-radius: 8px; margin: 10px 0; }}
     .neon-box {{ background: #E3F2FD; border-left: 5px solid #1976D2; padding: 12px 16px; border-radius: 8px; margin: 10px 0; }}
+    .error-box {{ background: #FFEBEE; border-left: 5px solid #F44336; padding: 12px 16px; border-radius: 8px; margin: 10px 0; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -74,9 +66,8 @@ def money(v):
     except: return "₺ 0,00"
 
 # ============================================================
-# VERİTABANI
+# VERİTABANI BAĞLANTISI (ZORUNLU NEON)
 # ============================================================
-DB_PATH = Path(__file__).with_name("emir_asel.db")
 NEON_OK = False
 conn = None
 
@@ -86,95 +77,46 @@ try:
     with conn.session as s:
         s.execute(text("SELECT 1"))
     NEON_OK = True
-except Exception:
-    NEON_OK = False
+except Exception as e:
+    st.markdown(f'<div class="error-box">🚨 <b>Neon Bağlantı Hatası:</b> {e}<br>Lütfen Secrets ayarlarınızı kontrol edin.</div>', unsafe_allow_html=True)
+    st.stop() # Bağlantı yoksa uygulamayı durdur
 
 def db_load(table, cols):
-    """Veriyi her zaman veritabanından (Neon veya SQLite) okur."""
-    if NEON_OK:
-        try:
-            df = conn.query(f"SELECT * FROM {table}", ttl=0)
-            if "id" in df.columns: df = df.drop(columns=["id"])
-            for c in cols:
-                if c not in df.columns: df[c] = None
-            return df[cols]
-        except Exception:
-            return pd.DataFrame(columns=cols)
-    else:
-        try:
-            con = sqlite3.connect(DB_PATH)
-            df = pd.read_sql_query(f"SELECT * FROM {table}", con)
-            con.close()
-            if "id" in df.columns: df = df.drop(columns=["id"])
-            for c in cols:
-                if c not in df.columns: df[c] = None
-            return df[cols]
-        except Exception:
-            return pd.DataFrame(columns=cols)
+    try:
+        df = conn.query(f"SELECT * FROM {table}", ttl=0)
+        if "id" in df.columns: df = df.drop(columns=["id"])
+        for c in cols:
+            if c not in df.columns: df[c] = None
+        return df[cols]
+    except Exception:
+        return pd.DataFrame(columns=cols)
 
 def db_save(table, df, cols):
-    """Veriyi kaydeder. Başarılı olursa hafızayı SIFIRLAR ve sayfayı yeniler."""
     try:
         df_to_save = df.copy()
         for c in cols:
             if c not in df_to_save.columns: df_to_save[c] = None
         df_to_save = df_to_save[cols]
 
-        if NEON_OK:
-            with conn.session as s:
-                s.execute(text(f"DELETE FROM {table}"))
-                if not df_to_save.empty:
-                    for _, row in df_to_save.iterrows():
-                        placeholders = ", ".join([f":{c}" for c in cols])
-                        col_names = ", ".join(cols)
-                        params = {c: row[c] for c in cols}
-                        s.execute(text(f"INSERT INTO {table} ({col_names}) VALUES ({placeholders})"), params)
-                s.commit()
-        else:
-            con = sqlite3.connect(DB_PATH)
-            df_to_save.to_sql(table, con, if_exists="replace", index=False)
-            con.close()
+        with conn.session as s:
+            s.execute(text(f"DELETE FROM {table}"))
+            if not df_to_save.empty:
+                for _, row in df_to_save.iterrows():
+                    placeholders = ", ".join([f":{c}" for c in cols])
+                    col_names = ", ".join(cols)
+                    params = {c: row[c] for c in cols}
+                    s.execute(text(f"INSERT INTO {table} ({col_names}) VALUES ({placeholders})"), params)
+            s.commit()
         
-        # KRİTİK NOKTA: Hafızayı temizle ve yenile
         st.session_state.clear()
-        st.success("✅ Kaydedildi! Sayfa yenileniyor...")
         st.rerun()
         return True
     except Exception as e:
-        st.error(f"Veritabanı kayıt hatası: {e}")
+        st.error(f"Kayıt hatası: {e}")
         return False
 
-def init_db():
-    tables = {
-        "plan": "id SERIAL PRIMARY KEY, wbs TEXT, poz TEXT, is_kalemi TEXT, ana_kategori TEXT, alt_kategori TEXT, birim TEXT, miktar REAL, birim_fiyat REAL, planlanan_tutar REAL, baslangic TEXT, bitis TEXT, sorumlu TEXT, aciklama TEXT",
-        "actual": "id SERIAL PRIMARY KEY, wbs TEXT, poz TEXT, is_kalemi TEXT, ana_kategori TEXT, birim TEXT, gerceklesen_miktar REAL, gerceklesen_birim_fiyat REAL, gerceklesen_tutar REAL, tarih TEXT, tedarikci TEXT, belge_no TEXT, aciklama TEXT",
-        "schedule": "id SERIAL PRIMARY KEY, wbs TEXT, aktivite TEXT, sure REAL, oncul TEXT, bagimlilik TEXT, baslangic TEXT, bitis TEXT, fiili_baslangic TEXT, fiili_bitis TEXT, tamamlanma REAL, agirlik REAL, sorumlu TEXT, durum TEXT, kanit TEXT",
-        "risk": "id SERIAL PRIMARY KEY, risk_id TEXT, risk_tanimi TEXT, kategori TEXT, olasilik REAL, etki REAL, risk_skoru REAL, onlem TEXT, sorumlu TEXT, durum TEXT, maliyet_etkisi REAL",
-        "cash": "id SERIAL PRIMARY KEY, donem TEXT, planlanan REAL, gerceklesen REAL, net REAL, kumulatif REAL",
-    }
-    if NEON_OK:
-        try:
-            with conn.session as s:
-                for t, c in tables.items():
-                    s.execute(text(f"CREATE TABLE IF NOT EXISTS {t} ({c})"))
-                s.commit()
-        except Exception as e:
-            st.warning(f"Neon tablo hatası: {e}")
-    else:
-        try:
-            con = sqlite3.connect(DB_PATH)
-            for t, c in tables.items():
-                c = c.replace("SERIAL", "INTEGER")
-                con.execute(f"CREATE TABLE IF NOT EXISTS {t} ({c})")
-            con.commit()
-            con.close()
-        except Exception as e:
-            st.warning(f"SQLite tablo hatası: {e}")
-
-init_db()
-
 # ============================================================
-# VERİ YÜKLE (Her yenilemede DB'den okur)
+# VERİ YÜKLE
 # ============================================================
 if "loaded" not in st.session_state:
     st.session_state.plan = db_load("plan", PLAN_COLS)
@@ -182,11 +124,6 @@ if "loaded" not in st.session_state:
     st.session_state.schedule = db_load("schedule", SCHEDULE_COLS)
     st.session_state.risk = db_load("risk", RISK_COLS)
     st.session_state.cash = db_load("cash", CASH_COLS)
-    
-    # Eğer tamamen boşsa örnek veri koy
-    if st.session_state.plan.empty:
-        st.session_state.plan = pd.DataFrame([["1.1","01.001","Mimari Projeler","Mimarlık / Proje Gideri","Proje","LS",1,850000,850000,"","","",""]], columns=PLAN_COLS)
-    
     st.session_state.loaded = True
 
 # ============================================================
@@ -204,17 +141,15 @@ with st.sidebar:
     MENU = ["Yönetici Dashboard","Bütçe ve Metraj","Gerçekleşen Maliyet","İş Programı / CPM","EVM Performans","Risk Yönetimi","Nakit Akışı (S-Curve)","Raporlar"]
     page = st.radio("MODÜLLER", MENU)
     st.divider()
-    
-    if NEON_OK: st.markdown('<div class="neon-box">☁️ <b>Neon PostgreSQL</b> bağlı.</div>', unsafe_allow_html=True)
-    else: st.markdown('<div class="save-box">💾 <b>SQLite</b> kullanılıyor.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="neon-box">☁️ <b>Neon PostgreSQL</b> bağlı.</div>', unsafe_allow_html=True)
 
 # ============================================================
 # SAYFA: DASHBOARD
 # ============================================================
 plan = st.session_state.plan.copy()
 actual = st.session_state.actual.copy()
-budget = float(plan["planlanan_tutar"].sum()) if not plan.empty else 0
-actual_cost = float(actual["gerceklesen_tutar"].sum()) if not actual.empty else 0
+budget = float(plan["planlanan_tutar"].sum()) if not plan.empty else 0.0
+actual_cost = float(actual["gerceklesen_tutar"].sum()) if not actual.empty else 0.0
 
 if page == "Yönetici Dashboard":
     st.title("Yönetici Dashboard")
@@ -225,7 +160,7 @@ if page == "Yönetici Dashboard":
     c4.metric("Kayıt Sayısı", len(plan))
 
 # ============================================================
-# SAYFA: BÜTÇE (PDF + Canlı Düzenleme)
+# SAYFA: BÜTÇE
 # ============================================================
 elif page == "Bütçe ve Metraj":
     st.title("Bütçe ve Metraj")
