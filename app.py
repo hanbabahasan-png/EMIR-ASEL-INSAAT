@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-EMİR ASEL İNŞAAT | PROJE KONTROL V9.8
+EMİR ASEL İNŞAAT | PROJE KONTROL V9.9
+- PDF Limit 15MB'a çıkarıldı.
 - Akıllı Mükerrer Kontrolü (Poz No + Fiyat Karşılaştırması).
 - Türkiye Saati (UTC+3) desteği.
-- Neon PostgreSQL kalıcılığı.
-- PDF Bellek Koruması (Maks 5MB).
 """
 from __future__ import annotations
 from io import BytesIO
@@ -22,10 +21,10 @@ try:
 except ImportError:
     ACIKPOZ_OK = False
 
-APP_VERSION = "9.8"
+APP_VERSION = "9.9"
 TR_TZ = ZoneInfo("Europe/Istanbul")
 
-st.set_page_config(page_title="Emir Asel | Proje Kontrol V9.8", page_icon="🏗️", layout="wide")
+st.set_page_config(page_title="Emir Asel | Proje Kontrol V9.9", page_icon="🏗️", layout="wide")
 
 # ============================================================
 # TEMA
@@ -68,13 +67,12 @@ def money(v):
     except: return "₺ 0,00"
 
 # ============================================================
-# VERİTABANI BAĞLANTISI (DÜZELTİLDİ)
+# VERİTABANI BAĞLANTISI
 # ============================================================
 NEON_OK = False
 conn = None
 
 try:
-    # pool_pre_ping parametresi kaldırıldı
     conn = st.connection("neon", type="sql")
     with conn.session as s:
         s.execute(text("SELECT 1"))
@@ -83,7 +81,6 @@ except Exception as e:
     st.markdown(f'<div class="error-box">🚨 <b>Neon Bağlantı Hatası:</b> {e}<br>Lütfen Secrets ayarlarınızı kontrol edin.</div>', unsafe_allow_html=True)
     st.stop()
 
-# Tabloları otomatik oluştur (Yoksa)
 def init_db():
     tables = {
         "plan": "id SERIAL PRIMARY KEY, wbs TEXT, poz TEXT, is_kalemi TEXT, ana_kategori TEXT, alt_kategori TEXT, birim TEXT, miktar REAL, birim_fiyat REAL, planlanan_tutar REAL, baslangic TEXT, bitis TEXT, sorumlu TEXT, aciklama TEXT",
@@ -97,8 +94,7 @@ def init_db():
             for t, c in tables.items():
                 s.execute(text(f"CREATE TABLE IF NOT EXISTS {t} ({c})"))
             s.commit()
-    except:
-        pass
+    except: pass
 
 init_db()
 
@@ -193,16 +189,16 @@ if page == "Yönetici Dashboard":
     c4.metric("Kayıt Sayısı", len(plan))
 
 # ============================================================
-# BÜTÇE VE METRAJ (Akıllı Mükerrer Kontrolü)
+# BÜTÇE VE METRAJ
 # ============================================================
 elif page == "Bütçe ve Metraj":
     st.title("Bütçe ve Metraj")
     
-    # 1. PDF YÜKLEME VE OKUMA
     if ACIKPOZ_OK:
-        pdf_file = st.file_uploader("ÇŞB Birim Fiyat PDF'i yükle (Maks 5MB)", type=["pdf"])
+        # Limit 15 MB'a çıkarıldı
+        pdf_file = st.file_uploader("ÇŞB Birim Fiyat PDF'i yükle (Maks 15MB)", type=["pdf"])
         if pdf_file:
-            if pdf_file.size > 5 * 1024 * 1024:
+            if pdf_file.size > 15 * 1024 * 1024:
                 st.error(f"⚠️ Dosya çok büyük! ({pdf_file.size/1024/1024:.1f} MB). Lütfen PDF'i parçalara ayırıp yükleyin.")
             else:
                 if st.button("PDF'i Oku ve Karşılaştır"):
@@ -221,7 +217,6 @@ elif page == "Bütçe ve Metraj":
                                 })
                         
                         if kalemler:
-                            # --- AKILLI MÜKERRER KONTROLÜ ---
                             mevcut_dict = {}
                             if not plan.empty:
                                 for _, row in plan.iterrows():
@@ -260,10 +255,9 @@ elif page == "Bütçe ve Metraj":
                     finally:
                         os.unlink(tmp_path)
 
-    # 2. SEÇİM EKRANI
     if st.session_state.pdf_kalemler is not None:
         st.markdown('<div class="section-title">📋 PDF Karşılaştırma ve Seçim Ekranı</div>', unsafe_allow_html=True)
-        st.info("💡 'MÜKERRER (Aynı)' olanlar başta işaretsiz gelir. 'GÜNCELLEME' ve 'YENİ' olanlar tikli gelir. Fiyatı değişen kalemlerin eski fiyatlarını kontrol edebilirsiniz.")
+        st.info("💡 'MÜKERRER (Aynı)' olanlar başta işaretsiz gelir. 'GÜNCELLEME' ve 'YENİ' olanlar tikli gelir.")
         
         df_kalemler = pd.DataFrame(st.session_state.pdf_kalemler)
         
@@ -291,7 +285,6 @@ elif page == "Bütçe ve Metraj":
                     st.warning("Hiç kalem seçmediniz.")
                 else:
                     yeni_plan = plan.copy()
-                    
                     for _, row in secilenler.iterrows():
                         poz = row["poz"]
                         if row["durum"] == "GÜNCELLEME (Fiyat Farklı)":
@@ -302,7 +295,6 @@ elif page == "Bütçe ve Metraj":
                         yeni_satir["is_kalemi"] = row["is_kalemi"]
                         yeni_satir["birim"] = row["birim"]
                         yeni_satir["birim_fiyat"] = row["birim_fiyat"]
-                        
                         yeni_plan = pd.concat([yeni_plan, pd.DataFrame([yeni_satir])], ignore_index=True)
                     
                     st.session_state.plan = yeni_plan
@@ -316,9 +308,13 @@ elif page == "Bütçe ve Metraj":
 
     st.divider()
 
-    # 3. ANA TABLO VE KAYDETME
     st.markdown('<div class="section-title">📊 Güncel Bütçe Tablosu</div>', unsafe_allow_html=True)
-    edited_plan = st.data_editor(st.session_state.plan, num_rows="dynamic", width="stretch",
+    
+    # "None" satırlarını temizle (Sadece boş olanları filtreler)
+    temiz_plan = st.session_state.plan.copy()
+    temiz_plan = temiz_plan[~temiz_plan["poz"].isna() & (temiz_plan["poz"] != "None") & (temiz_plan["poz"] != "")]
+
+    edited_plan = st.data_editor(temiz_plan, num_rows="dynamic", width="stretch",
         column_config={"ana_kategori": st.column_config.SelectboxColumn(options=COST_CATEGORIES)},
         key="plan_editor")
     
