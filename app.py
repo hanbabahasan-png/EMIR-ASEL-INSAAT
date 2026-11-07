@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-EMİR ASEL İNŞAAT | PROJE KONTROL V9.5 (NİHAİ SÜRÜM)
-- Neon PostgreSQL'e zorunlu bağlantı.
-- "..." sorunu giderildi, hatalar ekrana basılıyor.
+EMİR ASEL İNŞAAT | PROJE KONTROL V9.6
+- Türkiye Saati (UTC+3) desteği eklendi.
+- PDF bellek koruması eklendi (Maks 5MB).
+- Neon PostgreSQL bağlantısı kalıcıdır.
 """
 from __future__ import annotations
 from io import BytesIO
 from datetime import datetime
-import os, tempfile, sqlite3
-from pathlib import Path
+from zoneinfo import ZoneInfo  # Saat dilimi için
+import os, tempfile
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -20,9 +21,10 @@ try:
 except ImportError:
     ACIKPOZ_OK = False
 
-APP_VERSION = "9.5"
+APP_VERSION = "9.6"
+TR_TZ = ZoneInfo("Europe/Istanbul") # Türkiye Saati
 
-st.set_page_config(page_title="Emir Asel | Proje Kontrol V9.5", page_icon="🏗️", layout="wide")
+st.set_page_config(page_title="Emir Asel | Proje Kontrol V9.6", page_icon="🏗️", layout="wide")
 
 # ============================================================
 # TEMA
@@ -66,20 +68,19 @@ def money(v):
     except: return "₺ 0,00"
 
 # ============================================================
-# VERİTABANI BAĞLANTISI (ZORUNLU NEON)
+# VERİTABANI BAĞLANTISI
 # ============================================================
 NEON_OK = False
 conn = None
 
 try:
-    conn = st.connection("neon", type="sql")
-    # Bağlantıyı test et
+    conn = st.connection("neon", type="sql", connect_args={"pool_pre_ping": True})
     with conn.session as s:
         s.execute(text("SELECT 1"))
     NEON_OK = True
 except Exception as e:
     st.markdown(f'<div class="error-box">🚨 <b>Neon Bağlantı Hatası:</b> {e}<br>Lütfen Secrets ayarlarınızı kontrol edin.</div>', unsafe_allow_html=True)
-    st.stop() # Bağlantı yoksa uygulamayı durdur
+    st.stop()
 
 def db_load(table, cols):
     try:
@@ -127,15 +128,16 @@ if "loaded" not in st.session_state:
     st.session_state.loaded = True
 
 # ============================================================
-# HEADER
+# HEADER (Saat Dilimi Güncellendi)
 # ============================================================
-st.markdown(f'<div class="ea-header"><h1>🏗️ EMİR ASEL İNŞAAT</h1><div class="sub">PROJE KONTROL V{APP_VERSION} · {datetime.now():%d.%m.%Y %H:%M}</div></div>', unsafe_allow_html=True)
+now_tr = datetime.now(TR_TZ)
+st.markdown(f'<div class="ea-header"><h1>🏗️ EMİR ASEL İNŞAAT</h1><div class="sub">PROJE KONTROL V{APP_VERSION} · {now_tr.strftime("%d.%m.%Y %H:%M")}</div></div>', unsafe_allow_html=True)
 
 # ============================================================
 # SIDEBAR
 # ============================================================
 with st.sidebar:
-    try: st.image("logo.png", use_container_width=True)
+    try: st.image("logo.png", width="stretch")
     except: st.markdown("### 🏗️ EMİR ASEL")
     
     MENU = ["Yönetici Dashboard","Bütçe ve Metraj","Gerçekleşen Maliyet","İş Programı / CPM","EVM Performans","Risk Yönetimi","Nakit Akışı (S-Curve)","Raporlar"]
@@ -148,8 +150,16 @@ with st.sidebar:
 # ============================================================
 plan = st.session_state.plan.copy()
 actual = st.session_state.actual.copy()
-budget = float(plan["planlanan_tutar"].sum()) if not plan.empty else 0.0
-actual_cost = float(actual["gerceklesen_tutar"].sum()) if not actual.empty else 0.0
+
+if not plan.empty and "planlanan_tutar" in plan.columns:
+    budget = float(pd.to_numeric(plan["planlanan_tutar"], errors="coerce").fillna(0).sum())
+else:
+    budget = 0.0
+
+if not actual.empty and "gerceklesen_tutar" in actual.columns:
+    actual_cost = float(pd.to_numeric(actual["gerceklesen_tutar"], errors="coerce").fillna(0).sum())
+else:
+    actual_cost = 0.0
 
 if page == "Yönetici Dashboard":
     st.title("Yönetici Dashboard")
@@ -160,33 +170,38 @@ if page == "Yönetici Dashboard":
     c4.metric("Kayıt Sayısı", len(plan))
 
 # ============================================================
-# SAYFA: BÜTÇE
+# SAYFA: BÜTÇE (PDF Bellek Korumalı)
 # ============================================================
 elif page == "Bütçe ve Metraj":
     st.title("Bütçe ve Metraj")
     
     if ACIKPOZ_OK:
-        pdf_file = st.file_uploader("ÇŞB Birim Fiyat PDF'i yükle", type=["pdf"])
-        if pdf_file and st.button("PDF'i Oku ve Ekle"):
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                tmp.write(pdf_file.getvalue()); tmp_path = tmp.name
-            try:
-                result = parse_catalog(tmp_path)
-                kalemler = []
-                for p in result.pozes:
-                    if getattr(p, "is_priced", False) and getattr(p, "fiyat", None) is not None:
-                        kalemler.append({"poz": str(p.poz_no).strip(), "is_kalemi": str(p.tanim)[:200], "birim": str(p.birim), "birim_fiyat": float(p.fiyat)})
-                if kalemler:
-                    new_rows = pd.DataFrame(kalemler)
-                    for c in PLAN_COLS:
-                        if c not in new_rows.columns: new_rows[c] = None
-                    st.session_state.plan = pd.concat([st.session_state.plan, new_rows[PLAN_COLS]], ignore_index=True)
-                    st.success(f"{len(kalemler)} kalem eklendi! Aşağıdaki 'Kaydet' butonuna basın.")
-                else: st.warning("PDF'te fiyatlı poz bulunamadı.")
-            except Exception as e: st.error(f"Hata: {e}")
-            finally: os.unlink(tmp_path)
+        pdf_file = st.file_uploader("ÇŞB Birim Fiyat PDF'i yükle (Maks 5MB)", type=["pdf"])
+        if pdf_file:
+            # BELLEK KORUMASI: 5 MB'tan büyükse reddet
+            if pdf_file.size > 5 * 1024 * 1024:
+                st.error(f"⚠️ Dosya çok büyük! ({pdf_file.size/1024/1024:.1f} MB). Lütfen PDF'i parçalara ayırıp 5MB'tan küçük dosyalar halinde yükleyin.")
+            else:
+                if st.button("PDF'i Oku ve Ekle"):
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                        tmp.write(pdf_file.getvalue()); tmp_path = tmp.name
+                    try:
+                        result = parse_catalog(tmp_path)
+                        kalemler = []
+                        for p in result.pozes:
+                            if getattr(p, "is_priced", False) and getattr(p, "fiyat", None) is not None:
+                                kalemler.append({"poz": str(p.poz_no).strip(), "is_kalemi": str(p.tanim)[:200], "birim": str(p.birim), "birim_fiyat": float(p.fiyat)})
+                        if kalemler:
+                            new_rows = pd.DataFrame(kalemler)
+                            for c in PLAN_COLS:
+                                if c not in new_rows.columns: new_rows[c] = None
+                            st.session_state.plan = pd.concat([st.session_state.plan, new_rows[PLAN_COLS]], ignore_index=True)
+                            st.success(f"{len(kalemler)} kalem eklendi! Aşağıdaki 'Kaydet' butonuna basın.")
+                        else: st.warning("PDF'te fiyatlı poz bulunamadı.")
+                    except Exception as e: st.error(f"PDF okunurken hata oluştu: {e}")
+                    finally: os.unlink(tmp_path)
     
-    edited = st.data_editor(st.session_state.plan, num_rows="dynamic", use_container_width=True,
+    edited = st.data_editor(st.session_state.plan, num_rows="dynamic", width="stretch",
         column_config={"ana_kategori": st.column_config.SelectboxColumn(options=COST_CATEGORIES)},
         key="plan_editor")
     
@@ -200,7 +215,7 @@ elif page == "Bütçe ve Metraj":
 # ============================================================
 elif page == "Gerçekleşen Maliyet":
     st.title("Gerçekleşen Maliyet")
-    edited = st.data_editor(st.session_state.actual, num_rows="dynamic", use_container_width=True,
+    edited = st.data_editor(st.session_state.actual, num_rows="dynamic", width="stretch",
         column_config={"ana_kategori": st.column_config.SelectboxColumn(options=COST_CATEGORIES)},
         key="actual_editor")
     
@@ -214,7 +229,7 @@ elif page == "Gerçekleşen Maliyet":
 # ============================================================
 elif page == "İş Programı / CPM":
     st.title("İş Programı / CPM")
-    edited = st.data_editor(st.session_state.schedule, num_rows="dynamic", use_container_width=True, key="sched_editor")
+    edited = st.data_editor(st.session_state.schedule, num_rows="dynamic", width="stretch", key="sched_editor")
     if st.button("💾 İş Programını Kaydet (Kalıcı)", type="primary"):
         db_save("schedule", edited, SCHEDULE_COLS)
 
@@ -223,7 +238,7 @@ elif page == "İş Programı / CPM":
 # ============================================================
 elif page == "Risk Yönetimi":
     st.title("Risk Yönetimi")
-    edited = st.data_editor(st.session_state.risk, num_rows="dynamic", use_container_width=True, key="risk_editor")
+    edited = st.data_editor(st.session_state.risk, num_rows="dynamic", width="stretch", key="risk_editor")
     if st.button("💾 Riskleri Kaydet (Kalıcı)", type="primary"):
         db_save("risk", edited, RISK_COLS)
 
@@ -232,7 +247,7 @@ elif page == "Risk Yönetimi":
 # ============================================================
 elif page == "Nakit Akışı (S-Curve)":
     st.title("Nakit Akışı (S-Curve)")
-    edited = st.data_editor(st.session_state.cash, num_rows="dynamic", use_container_width=True, key="cash_editor")
+    edited = st.data_editor(st.session_state.cash, num_rows="dynamic", width="stretch", key="cash_editor")
     if st.button("💾 Nakit Akışını Kaydet (Kalıcı)", type="primary"):
         db_save("cash", edited, CASH_COLS)
 
@@ -259,5 +274,5 @@ elif page == "Raporlar":
         st.session_state.risk.to_excel(writer, sheet_name="Riskler", index=False)
         st.session_state.cash.to_excel(writer, sheet_name="Nakit Akışı", index=False)
     st.download_button("📥 Excel Raporu İndir", data=output.getvalue(), 
-                       file_name=f"EmirAsel_{datetime.now():%Y%m%d_%H%M}.xlsx",
+                       file_name=f"EmirAsel_{datetime.now(TR_TZ).strftime('%Y%m%d_%H%M')}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
