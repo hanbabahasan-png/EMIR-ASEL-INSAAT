@@ -4,6 +4,7 @@ EMİR ASEL İNŞAAT | PROJE KONTROL V9.8
 - Akıllı Mükerrer Kontrolü (Poz No + Fiyat Karşılaştırması).
 - Türkiye Saati (UTC+3) desteği.
 - Neon PostgreSQL kalıcılığı.
+- PDF Bellek Koruması (Maks 5MB).
 """
 from __future__ import annotations
 from io import BytesIO
@@ -67,19 +68,39 @@ def money(v):
     except: return "₺ 0,00"
 
 # ============================================================
-# VERİTABANI
+# VERİTABANI BAĞLANTISI (DÜZELTİLDİ)
 # ============================================================
 NEON_OK = False
 conn = None
 
 try:
-    conn = st.connection("neon", type="sql", connect_args={"pool_pre_ping": True})
+    # pool_pre_ping parametresi kaldırıldı
+    conn = st.connection("neon", type="sql")
     with conn.session as s:
         s.execute(text("SELECT 1"))
     NEON_OK = True
 except Exception as e:
     st.markdown(f'<div class="error-box">🚨 <b>Neon Bağlantı Hatası:</b> {e}<br>Lütfen Secrets ayarlarınızı kontrol edin.</div>', unsafe_allow_html=True)
     st.stop()
+
+# Tabloları otomatik oluştur (Yoksa)
+def init_db():
+    tables = {
+        "plan": "id SERIAL PRIMARY KEY, wbs TEXT, poz TEXT, is_kalemi TEXT, ana_kategori TEXT, alt_kategori TEXT, birim TEXT, miktar REAL, birim_fiyat REAL, planlanan_tutar REAL, baslangic TEXT, bitis TEXT, sorumlu TEXT, aciklama TEXT",
+        "actual": "id SERIAL PRIMARY KEY, wbs TEXT, poz TEXT, is_kalemi TEXT, ana_kategori TEXT, birim TEXT, gerceklesen_miktar REAL, gerceklesen_birim_fiyat REAL, gerceklesen_tutar REAL, tarih TEXT, tedarikci TEXT, belge_no TEXT, aciklama TEXT",
+        "schedule": "id SERIAL PRIMARY KEY, wbs TEXT, aktivite TEXT, sure REAL, oncul TEXT, bagimlilik TEXT, baslangic TEXT, bitis TEXT, fiili_baslangic TEXT, fiili_bitis TEXT, tamamlanma REAL, agirlik REAL, sorumlu TEXT, durum TEXT, kanit TEXT",
+        "risk": "id SERIAL PRIMARY KEY, risk_id TEXT, risk_tanimi TEXT, kategori TEXT, olasilik REAL, etki REAL, risk_skoru REAL, onlem TEXT, sorumlu TEXT, durum TEXT, maliyet_etkisi REAL",
+        "cash": "id SERIAL PRIMARY KEY, donem TEXT, planlanan REAL, gerceklesen REAL, net REAL, kumulatif REAL",
+    }
+    try:
+        with conn.session as s:
+            for t, c in tables.items():
+                s.execute(text(f"CREATE TABLE IF NOT EXISTS {t} ({c})"))
+            s.commit()
+    except:
+        pass
+
+init_db()
 
 def db_load(table, cols):
     try:
@@ -217,13 +238,12 @@ elif page == "Bütçe ve Metraj":
                                     eski_fiyat = mevcut_dict[p_no]["fiyat"]
                                     yeni_fiyat = k["birim_fiyat"]
                                     
-                                    # Fiyatlar arasında kuruş farkı varsa eşit kabul et
                                     if abs(eski_fiyat - yeni_fiyat) < 0.01:
                                         k["durum"] = "MÜKERRER (Aynı)"
                                         k["sec"] = False
                                     else:
                                         k["durum"] = "GÜNCELLEME (Fiyat Farklı)"
-                                        k["sec"] = True # Güncellenmesi için tikli gelsin
+                                        k["sec"] = True 
                                     k["eski_fiyat"] = eski_fiyat
                                 else:
                                     k["durum"] = "YENİ"
@@ -270,23 +290,19 @@ elif page == "Bütçe ve Metraj":
                 if secilenler.empty:
                     st.warning("Hiç kalem seçmediniz.")
                 else:
-                    # Mevcut tabloyu kopyala
                     yeni_plan = plan.copy()
                     
                     for _, row in secilenler.iterrows():
                         poz = row["poz"]
-                        # Eğer bu poz zaten varsa (Güncelleme), eskisini sil
                         if row["durum"] == "GÜNCELLEME (Fiyat Farklı)":
                             yeni_plan = yeni_plan[yeni_plan["poz"].astype(str).str.strip() != str(poz).strip()]
                         
-                        # Yeni satırı hazırla
                         yeni_satir = {c: None for c in PLAN_COLS}
                         yeni_satir["poz"] = poz
                         yeni_satir["is_kalemi"] = row["is_kalemi"]
                         yeni_satir["birim"] = row["birim"]
                         yeni_satir["birim_fiyat"] = row["birim_fiyat"]
                         
-                        # Satırı tabloya ekle
                         yeni_plan = pd.concat([yeni_plan, pd.DataFrame([yeni_satir])], ignore_index=True)
                     
                     st.session_state.plan = yeni_plan
