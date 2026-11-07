@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-EMİR ASEL İNŞAAT | PROJE KONTROL V9.9
-- PDF Limit 15MB'a çıkarıldı.
+EMİR ASEL İNŞAAT | PROJE KONTROL V10.0 (STABİL SÜRÜM)
+- Hatalar giderildi (ZoneInfo yerine timedelta kullanıldı).
+- Veri tablosu temizliği güvenli hale getirildi.
 - Akıllı Mükerrer Kontrolü (Poz No + Fiyat Karşılaştırması).
-- Türkiye Saati (UTC+3) desteği.
+- PDF Limit 15MB.
 """
 from __future__ import annotations
 from io import BytesIO
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta
 import os, tempfile
 import numpy as np
 import pandas as pd
@@ -21,10 +21,9 @@ try:
 except ImportError:
     ACIKPOZ_OK = False
 
-APP_VERSION = "9.9"
-TR_TZ = ZoneInfo("Europe/Istanbul")
+APP_VERSION = "10.0"
 
-st.set_page_config(page_title="Emir Asel | Proje Kontrol V9.9", page_icon="🏗️", layout="wide")
+st.set_page_config(page_title="Emir Asel | Proje Kontrol V10.0", page_icon="🏗️", layout="wide")
 
 # ============================================================
 # TEMA
@@ -60,11 +59,19 @@ CASH_COLS = ["donem","planlanan","gerceklesen","net","kumulatif"]
 COST_CATEGORIES = ["KABA İŞLER", "İNCE İŞLER / MEP", "DIŞ İŞLER", "GENEL GİDER / İŞÇİLİK", "Diğer"]
 
 # ============================================================
-# YARDIMCI
+# YARDIMCI FONKSİYONLAR
 # ============================================================
 def money(v):
     try: return f"₺ {float(v):,.2f}".replace(",","X").replace(".",",").replace("X",".")
     except: return "₺ 0,00"
+
+def auto_categorize(tanim):
+    t = str(tanim).lower()
+    if any(k in t for k in ["beton", "demir", "kalıp", "hafriyat", "kazı", "dolgu", "grobeton", "radye", "temel"]): return "KABA İŞLER"
+    if any(k in t for k in ["sıva", "boya", "seramik", "kapı", "pencere", "tesisat", "elektrik", "mekanik"]): return "İNCE İŞLER / MEP"
+    if any(k in t for k in ["peyzaj", "çevre", "drenaj", "istinat", "bahçe", "yol"]): return "DIŞ İŞLER"
+    if any(k in t for k in ["proje", "denetim", "ruhsat", "laboratuvar", "danışman", "işçilik"]): return "GENEL GİDER / İŞÇİLİK"
+    return "Diğer"
 
 # ============================================================
 # VERİTABANI BAĞLANTISI
@@ -147,16 +154,16 @@ if "pdf_kalemler" not in st.session_state:
     st.session_state.pdf_kalemler = None
 
 # ============================================================
-# HEADER
+# HEADER (GÜVENLİ SAAT)
 # ============================================================
-now_tr = datetime.now(TR_TZ)
+now_tr = datetime.utcnow() + timedelta(hours=3)
 st.markdown(f'<div class="ea-header"><h1>🏗️ EMİR ASEL İNŞAAT</h1><div class="sub">PROJE KONTROL V{APP_VERSION} · {now_tr.strftime("%d.%m.%Y %H:%M")}</div></div>', unsafe_allow_html=True)
 
 # ============================================================
 # SIDEBAR
 # ============================================================
 with st.sidebar:
-    try: st.image("logo.png", width="stretch")
+    try: st.image("logo.png", use_container_width=True)
     except: st.markdown("### 🏗️ EMİR ASEL")
     
     MENU = ["Yönetici Dashboard","Bütçe ve Metraj","Gerçekleşen Maliyet","İş Programı / CPM","EVM Performans","Risk Yönetimi","Nakit Akışı (S-Curve)","Raporlar"]
@@ -194,8 +201,8 @@ if page == "Yönetici Dashboard":
 elif page == "Bütçe ve Metraj":
     st.title("Bütçe ve Metraj")
     
+    # 1. PDF YÜKLEME VE OKUMA
     if ACIKPOZ_OK:
-        # Limit 15 MB'a çıkarıldı
         pdf_file = st.file_uploader("ÇŞB Birim Fiyat PDF'i yükle (Maks 15MB)", type=["pdf"])
         if pdf_file:
             if pdf_file.size > 15 * 1024 * 1024:
@@ -255,9 +262,10 @@ elif page == "Bütçe ve Metraj":
                     finally:
                         os.unlink(tmp_path)
 
+    # 2. SEÇİM EKRANI
     if st.session_state.pdf_kalemler is not None:
         st.markdown('<div class="section-title">📋 PDF Karşılaştırma ve Seçim Ekranı</div>', unsafe_allow_html=True)
-        st.info("💡 'MÜKERRER (Aynı)' olanlar başta işaretsiz gelir. 'GÜNCELLEME' ve 'YENİ' olanlar tikli gelir.")
+        st.info("💡 'MÜKERRER (Aynı)' olanlar başta işaretsiz gelir. 'GÜNCELLEME' ve 'YENİ' olanlar tikli gelir. Fiyatı değişen kalemlerin eski fiyatlarını kontrol edebilirsiniz.")
         
         df_kalemler = pd.DataFrame(st.session_state.pdf_kalemler)
         
@@ -273,28 +281,34 @@ elif page == "Bütçe ve Metraj":
                 "birim_fiyat": st.column_config.NumberColumn("Yeni Fiyat", format="%.2f", disabled=True),
             },
             hide_index=True,
-            width="stretch",
+            use_container_width=True,
             key="pdf_secim_editor"
         )
         
         c1, c2 = st.columns([1, 1])
         with c1:
-            if st.button("✅ Seçilenleri Tabloya Ekle / Güncelle", type="primary", width="stretch"):
+            if st.button("✅ Seçilenleri Tabloya Ekle / Güncelle", type="primary", use_container_width=True):
                 secilenler = edited_df[edited_df["sec"] == True]
                 if secilenler.empty:
                     st.warning("Hiç kalem seçmediniz.")
                 else:
                     yeni_plan = plan.copy()
+                    
                     for _, row in secilenler.iterrows():
                         poz = row["poz"]
+                        # Eğer bu poz zaten varsa (Güncelleme), eskisini sil
                         if row["durum"] == "GÜNCELLEME (Fiyat Farklı)":
                             yeni_plan = yeni_plan[yeni_plan["poz"].astype(str).str.strip() != str(poz).strip()]
                         
+                        # Yeni satırı hazırla
                         yeni_satir = {c: None for c in PLAN_COLS}
                         yeni_satir["poz"] = poz
                         yeni_satir["is_kalemi"] = row["is_kalemi"]
                         yeni_satir["birim"] = row["birim"]
                         yeni_satir["birim_fiyat"] = row["birim_fiyat"]
+                        yeni_satir["ana_kategori"] = auto_categorize(row["is_kalemi"]) # Otomatik Kategori
+                        
+                        # Satırı tabloya ekle
                         yeni_plan = pd.concat([yeni_plan, pd.DataFrame([yeni_satir])], ignore_index=True)
                     
                     st.session_state.plan = yeni_plan
@@ -302,19 +316,25 @@ elif page == "Bütçe ve Metraj":
                     st.success(f"{len(secilenler)} kalem başarıyla işlendi! Neon'a kaydetmek için alttaki butona basmayı unutmayın.")
                     st.rerun()
         with c2:
-            if st.button("❌ İptal / Seçimi Temizle", width="stretch"):
+            if st.button("❌ İptal / Seçimi Temizle", use_container_width=True):
                 st.session_state.pdf_kalemler = None
                 st.rerun()
 
     st.divider()
 
+    # 3. ANA TABLO VE KAYDETME
     st.markdown('<div class="section-title">📊 Güncel Bütçe Tablosu</div>', unsafe_allow_html=True)
     
-    # "None" satırlarını temizle (Sadece boş olanları filtreler)
+    # "None" satırlarını güvenli bir şekilde temizle
     temiz_plan = st.session_state.plan.copy()
-    temiz_plan = temiz_plan[~temiz_plan["poz"].isna() & (temiz_plan["poz"] != "None") & (temiz_plan["poz"] != "")]
+    if not temiz_plan.empty:
+        temiz_plan = temiz_plan[
+            temiz_plan["poz"].notna() & 
+            (temiz_plan["poz"].astype(str).str.strip() != "None") & 
+            (temiz_plan["poz"].astype(str).str.strip() != "")
+        ]
 
-    edited_plan = st.data_editor(temiz_plan, num_rows="dynamic", width="stretch",
+    edited_plan = st.data_editor(temiz_plan, num_rows="dynamic", use_container_width=True,
         column_config={"ana_kategori": st.column_config.SelectboxColumn(options=COST_CATEGORIES)},
         key="plan_editor")
     
@@ -328,7 +348,7 @@ elif page == "Bütçe ve Metraj":
 # ============================================================
 elif page == "Gerçekleşen Maliyet":
     st.title("Gerçekleşen Maliyet")
-    edited = st.data_editor(st.session_state.actual, num_rows="dynamic", width="stretch",
+    edited = st.data_editor(st.session_state.actual, num_rows="dynamic", use_container_width=True,
         column_config={"ana_kategori": st.column_config.SelectboxColumn(options=COST_CATEGORIES)},
         key="actual_editor")
     
@@ -342,7 +362,7 @@ elif page == "Gerçekleşen Maliyet":
 # ============================================================
 elif page == "İş Programı / CPM":
     st.title("İş Programı / CPM")
-    edited = st.data_editor(st.session_state.schedule, num_rows="dynamic", width="stretch", key="sched_editor")
+    edited = st.data_editor(st.session_state.schedule, num_rows="dynamic", use_container_width=True, key="sched_editor")
     if st.button("💾 İş Programını Kaydet (Kalıcı)", type="primary"):
         db_save("schedule", edited, SCHEDULE_COLS)
 
@@ -351,7 +371,7 @@ elif page == "İş Programı / CPM":
 # ============================================================
 elif page == "Risk Yönetimi":
     st.title("Risk Yönetimi")
-    edited = st.data_editor(st.session_state.risk, num_rows="dynamic", width="stretch", key="risk_editor")
+    edited = st.data_editor(st.session_state.risk, num_rows="dynamic", use_container_width=True, key="risk_editor")
     if st.button("💾 Riskleri Kaydet (Kalıcı)", type="primary"):
         db_save("risk", edited, RISK_COLS)
 
@@ -360,7 +380,7 @@ elif page == "Risk Yönetimi":
 # ============================================================
 elif page == "Nakit Akışı (S-Curve)":
     st.title("Nakit Akışı (S-Curve)")
-    edited = st.data_editor(st.session_state.cash, num_rows="dynamic", width="stretch", key="cash_editor")
+    edited = st.data_editor(st.session_state.cash, num_rows="dynamic", use_container_width=True, key="cash_editor")
     if st.button("💾 Nakit Akışını Kaydet (Kalıcı)", type="primary"):
         db_save("cash", edited, CASH_COLS)
 
@@ -387,5 +407,5 @@ elif page == "Raporlar":
         st.session_state.risk.to_excel(writer, sheet_name="Riskler", index=False)
         st.session_state.cash.to_excel(writer, sheet_name="Nakit Akışı", index=False)
     st.download_button("📥 Excel Raporu İndir", data=output.getvalue(), 
-                       file_name=f"EmirAsel_{datetime.now(TR_TZ).strftime('%Y%m%d_%H%M')}.xlsx",
+                       file_name=f"EmirAsel_{now_tr.strftime('%Y%m%d_%H%M')}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
