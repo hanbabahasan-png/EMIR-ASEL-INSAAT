@@ -36,7 +36,6 @@ section[data-testid="stSidebar"]{{background:linear-gradient(180deg,#0A192F,{NAV
 div[data-testid="stMetric"]{{background:white;border:1px solid #E5EAF0;border-left:4px solid {RED};padding:11px;border-radius:9px}}
 </style>""",unsafe_allow_html=True)
 
-# ŞEMALAR
 PLAN=["_id","WBS","Poz No","İş Kalemi","Ana Kategori","Alt Kategori","Birim","Miktar","Birim Fiyat","Planlanan Tutar","Para Birimi","Kur","Kur Kaynağı","Baz Para Birimi Tutarı","Fiyat Yılı","Fiyat Kaynağı","Başlangıç","Bitiş","Sorumlu","Metraj Durumu","Açıklama"]
 ACTUAL=["_id","WBS","Poz No","İş Kalemi","Ana Kategori","Birim","Gerçekleşen Miktar","Gerçekleşen Birim Fiyat","Gerçekleşen Tutar","Para Birimi","Kur","Kur Kaynağı","Baz Para Birimi Tutarı","Tarih","Tedarikçi","Belge No","Kayıt Türü","Durum","Onay Tarihi","Onaylayan","Açıklama"]
 SCHEDULE=["_id","WBS","Aktivite","Süre (gün)","Öncül WBS","Bağımlılık Tipi","Başlangıç","Bitiş","Fiili Başlangıç","Fiili Bitiş","Tamamlanma (%)","Ağırlık (%)","Sorumlu","Durum","Kanıt / Saha Notu"]
@@ -62,7 +61,6 @@ DATE_FIELDS={"plan":["Başlangıç","Bitiş"],"actual":["Tarih","Onay Tarihi"],"
 CATEGORIES=["Proje ve Ruhsat","Hafriyat ve Altyapı","Betonarme İmalatlar","Duvar / Sıva / Şap","Yalıtım / Çatı / Cephe","Mimari İnce İşler","Mekanik ve Elektrik","Peyzaj / Çevre","İşçilik / Taşeron","Satın Alma / Lojistik","Diğer"]
 GLOBAL_DATASETS={"library","rayic","yfk_candidates","yfk_runs"}
 
-# YARDIMCILAR
 def now_tr(): return datetime.now(TZ)
 def uid(): return uuid.uuid4().hex
 def _miss(x):
@@ -149,7 +147,6 @@ def calc_actual(df,base):
     x["Baz Para Birimi Tutarı"]=[fx(a,c,base,r) for a,c,r in zip(x["Gerçekleşen Tutar"],x["Para Birimi"],x["Kur"])]
     return x
 
-# VERİTABANI
 def db_url():
     u=os.getenv("DATABASE_URL","").strip()
     if not u:
@@ -192,7 +189,6 @@ def save_ds(proj,ds,df,cols):
         for s in cur_ids-keep: con.execute(text("DELETE FROM ea_records WHERE project_key=:p AND dataset=:d AND record_id=:r"),{"p":proj,"d":ds,"r":s})
         for _,row in frame.iterrows(): con.execute(stmt,{"p":proj,"d":ds,"r":str(row["_id"]),"v":pl(row.to_dict()),"t":stamp})
 
-# AUTH
 def pwd_hash(p,s): return hashlib.pbkdf2_hmac("sha256",p.encode(),bytes.fromhex(s),310000).hex()
 def list_users():
     with ENGINE.connect() as con: rows=con.execute(text("SELECT username,display_name,role,active,created_at FROM ea_users ORDER BY username")).fetchall()
@@ -243,7 +239,6 @@ def auth_gate():
     if fresh.empty or int(fresh.iloc[0].active)!=1: st.session_state.pop("auth_user",None); st.error("Hesap pasif."); st.stop()
     cur["role"]=str(fresh.iloc[0].role)
 
-# CPM
 def cpm_calc(sched):
     if sched.empty: return pd.DataFrame()
     d=ef(sched,SCHEDULE); d["WBS"]=d.WBS.fillna("").astype(str).str.strip(); d["Süre (gün)"]=pd.to_numeric(d["Süre (gün)"],errors="coerce").fillna(0).clip(lower=0)
@@ -289,7 +284,6 @@ def cpm_calc(sched):
     d["Erken Başlangıç"]=d.WBS.map(es); d["Erken Bitiş"]=d.WBS.map(ef); d["Bolluk (gün)"]=d.WBS.map(ls)-d.WBS.map(es); d["Kritik mi?"]=np.where(d["Bolluk (gün)"].abs()<1e-8,"EVET","Hayır")
     return d
 
-# EVM
 def evm_calc(plan,actual,sched,report_date,base):
     p=calc_plan(plan,base); a=calc_actual(actual,base)
     pp=p[approved_mask(p["Metraj Durumu"])]; aa=a[approved_mask(a["Durum"])]
@@ -349,11 +343,11 @@ def summary_costs(plan,actual,base):
         pb=float(pd.to_numeric(p[p["Ana Kategori"].fillna("")==cat]["Baz Para Birimi Tutarı"],errors="coerce").fillna(0).sum())
         ab=float(pd.to_numeric(a[a["Ana Kategori"].fillna("")==cat]["Baz Para Birimi Tutarı"],errors="coerce").fillna(0).sum())
         rows.append({"Ana Kategori":cat,"Bütçe":pb,"Gerçekleşen":ab,"Sapma":ab-pb,"Sapma (%)":((ab-pb)/pb*100 if pb else 0)})
+    if not rows:
+        return pd.DataFrame(columns=["Ana Kategori","Bütçe","Gerçekleşen","Sapma","Sapma (%)"])
     return pd.DataFrame(rows).sort_values("Bütçe",ascending=False)
 
-# ============ V14.5 ÖZELLİKLERİ ============
-
-# 1. FATURA ÖĞRENME
+# V14.5 YENİLİKLERİ
 def learn_mapping(proj,ted,item,cat,poz,mem_df):
     df=mem_df.copy() if not mem_df.empty else pd.DataFrame(columns=MEMORY)
     m=(df["Tedarikçi"].astype(str).str.strip()==str(ted).strip())&(df["İş Kalemi"].astype(str).str.strip()==str(item).strip())
@@ -378,7 +372,6 @@ def suggest_from_memory(ted,item,mem_df):
         if sc>bs: bs=sc; best=r
     return best.to_dict() if bs>=0.5 else None
 
-# 2. REVİZYON KARŞILAŞTIRMA
 def compare_revisions(a,b,key_cols=None,val_cols=None):
     key_cols=key_cols or ["Poz No","İş Kalemi"]; val_cols=val_cols or ["Miktar","Birim Fiyat"]
     A=a.copy() if a is not None else pd.DataFrame(); B=b.copy() if b is not None else pd.DataFrame()
@@ -404,7 +397,6 @@ def compare_revisions(a,b,key_cols=None,val_cols=None):
     out.loc[same,"Durum"]="AYNI"
     return out[out["Durum"]!="AYNI"].reset_index(drop=True)
 
-# 3. ANOMALİ
 def detect_anomalies(df,iqr=1.5):
     out=[]
     if df is None or df.empty: return pd.DataFrame(columns=["Tür","Alan","Poz No","İş Kalemi","Değer","Yön","Önem"])
@@ -424,7 +416,6 @@ def detect_anomalies(df,iqr=1.5):
             out.append({"Tür":"Tarih Mantıksız","Alan":"Tarih","Poz No":str(df.at[idx,"Poz No"]) if "Poz No" in df else "","İş Kalemi":str(df.at[idx,"İş Kalemi"])[:60] if "İş Kalemi" in df else "","Değer":"Bitiş<Başlangıç","Yön":"-","Önem":"Yüksek"})
     return pd.DataFrame(out) if out else pd.DataFrame(columns=["Tür","Alan","Poz No","İş Kalemi","Değer","Yön","Önem"])
 
-# 4. MONTE CARLO
 def monte_carlo_eac(bac,ac,ev,risk_df=None,it=1000,seed=42):
     if bac<=0: return None
     rng=np.random.default_rng(seed)
@@ -444,7 +435,6 @@ def monte_carlo_eac(bac,ac,ev,risk_df=None,it=1000,seed=42):
     sims=np.array(sims)
     return {"P10":float(np.percentile(sims,10)),"P50":float(np.percentile(sims,50)),"P90":float(np.percentile(sims,90)),"Ort":float(sims.mean()),"Sims":sims}
 
-# 5. AI
 def ai_client():
     k=os.getenv("OPENAI_API_KEY","").strip()
     if not k:
@@ -464,7 +454,6 @@ def ai_text(text,ctx=""):
     r=c.chat.completions.create(model=m,messages=[{"role":"system","content":"İnşaat teknik ofis asistanı. Özetle, uydurma."},{"role":"user","content":ctx+"\n\n"+text[:50000]}],max_tokens=1500)
     return r.choices[0].message.content
 
-# YFK
 YFK_INDEX="https://yfk.csb.gov.tr/aylik-guncel-rayic-ve-birim-fiyat-listeleri-113351"
 YFK_FALLBACK="https://yfk.csb.gov.tr/2026-yilina-ait-guncellenmis-aylik-rayic-ve-birim-fiyat-listeleri-kasim-ayi-03-kasim-2026-tarihinde-yayinlanmis-olup-01-kasim-2026-tarihinden-itibaren-gecerlidir-115099"
 YFK_HOSTS={"yfk.csb.gov.tr","webdosya.csb.gov.tr"}
@@ -621,7 +610,6 @@ def yfk_sync():
     save_ds("__GLOBAL__","yfk_candidates",old_c,YFK_CAND); save_ds("__GLOBAL__","yfk_runs",old_r,YFK_RUNS)
     return info,logs,len(cands)
 
-# DOSYA
 ALLOWED={".dwg",".dxf",".pdf",".xlsx",".xlsm",".csv",".ifc",".png",".jpg",".jpeg",".webp"}
 def validate_upload(up):
     name=Path(up.name).name; ext=Path(name).suffix.lower(); data=up.getvalue()
@@ -663,12 +651,10 @@ def fig_layout(fig,h=380):
     fig.update_layout(height=h,paper_bgcolor="white",plot_bgcolor="white",margin=dict(l=20,r=20,t=35,b=60),font=dict(family="Montserrat",size=11))
     fig.update_xaxes(showgrid=False); fig.update_yaxes(gridcolor="#E9EDF2"); return fig
 
-# NAVİGASYON
 SECTIONS={"Yönetim":["Dashboard","Performans"],"Proje":["Proje Künyesi","Dokümanlar","AI Belge"],"Metraj/Bütçe":["Excel Import","DXF Analiz","Birim Fiyat + YFK","Bütçe","Metraj Onay","Anomali"],"Maliyet":["Gerçekleşen","Fatura AI","EVM","Nakit Akışı","Monte Carlo EAC","Revizyon Diff","Kârlılık"],"Planlama":["İş Programı/CPM","Puantaj","Risk"],"Satın Alma":["Satın Alma","Stok"],"Sözleşme":["Sözleşme/Değişiklik","Taşeron Hakediş","İşveren Hakedişi","Onay Merkezi"],"AI":["AI Asistan","Fatura Öğrenme"],"Sistem":["Kullanıcı","Yedekleme","Excel Rapor","Sistem Bilgi"]}
 ALL_PAGES=set(sum(SECTIONS.values(),[]))
 ROLE_PAGES={"Yönetici":ALL_PAGES,"Proje Müdürü":ALL_PAGES-{"Kullanıcı","Sistem Bilgi","Yedekleme"},"Teknik Ofis":{"Dashboard","Performans","Proje Künyesi","Dokümanlar","AI Belge","Excel Import","DXF Analiz","Birim Fiyat + YFK","Bütçe","Metraj Onay","Anomali","İş Programı/CPM","EVM","Revizyon Diff","Onay Merkezi"},"Şantiye Şefi":{"Dashboard","Performans","Dokümanlar","DXF Analiz","Metraj Onay","İş Programı/CPM","Puantaj","Risk","Stok"},"Finans / Muhasebe":{"Dashboard","Performans","Gerçekleşen","Fatura AI","EVM","Nakit Akışı","Monte Carlo EAC","Kârlılık","Sözleşme/Değişiklik","Taşeron Hakediş","İşveren Hakedişi","Onay Merkezi"},"Satın Alma":{"Dashboard","Birim Fiyat + YFK","Satın Alma","Stok","Risk"},"Depo / Ambar":{"Dashboard","Stok"},"Görüntüleyici":{"Dashboard","Performans"}}
 
-# ===== ANA UYGULAMA =====
 if ENGINE is None: st.error(f"DB: {DB_ERR}"); st.stop()
 try: init_db()
 except Exception as e: st.error(f"DB init: {e}"); st.stop()
@@ -704,7 +690,6 @@ PLAN_DF=calc_plan(DATA["plan"],BASE_CURRENCY); ACTUAL_DF=calc_actual(DATA["actua
 EVM=evm_calc(PLAN_DF,ACTUAL_DF,DATA["schedule"],REPORT_DATE,BASE_CURRENCY)
 SUMMARY=summary_costs(PLAN_DF,ACTUAL_DF,BASE_CURRENCY); PROGRESS=wprogress(DATA["schedule"])
 CPM=cpm_calc(DATA["schedule"])
-MEM=DATA["memory"]
 
 def save_editor(ds_name,edited,cols,recalc=None):
     frame=ef(edited,cols)
@@ -715,7 +700,6 @@ def save_editor(ds_name,edited,cols,recalc=None):
     save_ds("__GLOBAL__" if ds_name in GLOBAL_DATASETS else PROJECT_KEY,ds_name,frame,cols)
     st.success(f"{len(frame)} kayıt."); st.rerun()
 
-# SAYFA YÖNLENDİRİCİ
 if page=="Dashboard":
     st.title("Dashboard")
     c1,c2,c3,c4=st.columns(4)
@@ -909,7 +893,7 @@ elif page=="Fatura AI":
                     save_ds(PROJECT_KEY,"actual",calc_actual(new_df,BASE_CURRENCY),ACTUAL)
                     save_ds(PROJECT_KEY,"memory",mem,MEMORY)
                     st.session_state.pop("fatura_cand",None)
-                    st.success(f"Kaydedildi ve {len(st.session_state.get('fatura_cand',[]))} eşleştirme öğrenildi."); st.rerun()
+                    st.success("Kaydedildi ve eşleştirme öğrenildi."); st.rerun()
                 except Exception as e: st.error(str(e))
         except Exception as e: st.error(f"Fatura: {e}")
 
