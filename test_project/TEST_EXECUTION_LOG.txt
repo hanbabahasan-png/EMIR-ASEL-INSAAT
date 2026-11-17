@@ -1,0 +1,5 @@
+Final execution evidence (2026-11-16)
+pytest -q: 90 passed, 0 failed
+python tests/test_ui_shell_smoke.py: 34 total, 0 failures (mock Streamlit shell; not a browser test)
+python tests/e2e_project_acceptance.py: 38 passed, 0 failed, 2 skipped (real IFC requires ifcopenshell; live AI requires provider credentials)
+python scripts/preflight.py: fails on this build host because Streamlit runtime is not installed; production acceptance remains blocked until runtime services/secrets are configured.
